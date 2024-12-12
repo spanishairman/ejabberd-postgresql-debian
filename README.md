@@ -8,7 +8,7 @@
 ##### Описание стенда
 Для работы будем использовать виртуальный стенд, построенный с использованием среды разработки [Vagrant](https://www.vagrantup.com/), инструментов управления виртуализацией [Libvirt](https://libvirt.org/), 
 эмулятора виртуальных машин [Qemu][https://www.qemu.org/], модуля ядра, использующего расширения виртуализации (Intel VT или AMD-V) [KVM](https://linux-kvm.org/page/Main_Page) и инструмента автоматизации [Ansible](https://www.ansible.com/)
-Схема стенда выглядит следующим образом:
+Логическая схема стенда выглядит следующим образом:
 
 ![Схема сети](/pictures/ejabberd.drawio.png)
 
@@ -18,3 +18,28 @@
 
 ##### Первоначальное развёртывание
 
+Для развертывания сети будем использовать _Vagrant_. Блок настроек, включающий в себя аппаратные характеристики машины и её сетевые параметры, за небольшими деталями, одинаков для всех машин. Приведем пример данного блока:
+```
+Vagrant.configure("2") do |config|
+  config.vm.define "Debian12-eJabberd1" do |e1server|
+  e1server.vm.box = "/home/max/vagrant/images/debian12"
+  e1server.vm.network :private_network,
+       :type => 'ip',
+       :libvirt__forward_mode => 'veryisolated',
+       :libvirt__dhcp_enabled => false,
+       :ip => '192.168.1.2',
+       :libvirt__netmask => '255.255.255.248',
+       :libvirt__network_name => 'vagrant-libvirt-inet1',
+       :libvirt__always_destroy => false
+  e1server.vm.provider "libvirt" do |lvirt|
+      lvirt.memory = "1024"
+      lvirt.cpus = "1"
+      lvirt.title = "Debian12-e1Server"
+      lvirt.description = "Виртуальная машина на базе дистрибутива Debian Linux. e1Server"
+      lvirt.management_network_name = "vagrant-libvirt-mgmt"
+      lvirt.management_network_address = "192.168.121.0/24"
+      lvirt.management_network_keep = "true"
+      lvirt.management_network_mac = "52:54:00:27:28:83"
+  end
+```
+Здесь с помощью параметра _e1server.vm.box_ задан начальный образ, с которого развёртывается машина, и две сети: сеть управления и изолированная сеть - параметры _e1server.vm.network_ и _lvirt.management\_network\_{name,address,keep,mac}_.
