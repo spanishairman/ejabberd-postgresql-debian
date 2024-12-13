@@ -335,3 +335,100 @@ LISTEN    0        128                  *:5280              *:*       users:(("b
 root@e1server:~# ejabberdctl ping ejabberd@e2server
 pong
 ```
+
+##### PostgreSQL
+###### Настройка файла _pg_hba.conf_
+Предоставим пользователю _ejabberd_ права на удалённый доступ к базе данных _ejabberd\_domain\_local_, а пользователю _replica\_role_ доступ к кластеру для потоковой репликации. Для этого нужно привести файл _pg_hba.conf_ для Master ноды к виду:
+```
+# Database administrative login by Unix domain socket
+# TYPE  DATABASE        USER            ADDRESS                 METHOD
+# "local" is for Unix domain socket connections only
+# IPv4 local connections:
+# IPv6 local connections:
+# Allow replication connections from localhost, by a user with the
+# replication privilege.
+local   replication     all     peer
+local   all     postgres        peer
+local   all     all     peer
+host    replication     replica_role    192.168.1.11/32 scram-sha-256
+host    replication     all     127.0.0.1/32    scram-sha-256
+host    replication     all     ::1/128 scram-sha-256
+host    ejabberd-domain-local   ejabberd        192.168.1.2/32  scram-sha-256
+host    ejabberd-domain-local   ejabberd        192.168.1.3/32  scram-sha-256
+host    all     all     127.0.0.1/32    scram-sha-256
+host    all     all     ::1/128 scram-sha-256
+```
+
+А для _Replica_:
+```
+# Database administrative login by Unix domain socket
+# TYPE  DATABASE        USER            ADDRESS                 METHOD
+# "local" is for Unix domain socket connections only
+# IPv4 local connections:
+# IPv6 local connections:
+# Allow replication connections from localhost, by a user with the
+# replication privilege.
+local   replication     all     peer
+local   all     postgres        peer
+local   all     all     peer
+host    replication     replica_role    192.168.1.10/32 scram-sha-256
+host    replication     all     127.0.0.1/32    scram-sha-256
+host    replication     all     ::1/128 scram-sha-256
+host    ejabberd-domain-local   ejabberd        192.168.1.2/32  scram-sha-256
+host    ejabberd-domain-local   ejabberd        192.168.1.3/32  scram-sha-256
+host    all     all     127.0.0.1/32    scram-sha-256
+host    all     all     ::1/128 scram-sha-256
+```
+Задача в _Ansible playbook_ - редактирование_pg\_hba.conf_ для предоставления доступа пользователю _ejabberd_ и настройки сетевого интерфейса, на котором работает _PostgreSQL_. Выполняется на обеих нодах:
+```
+    - name: Edit pg_hba configuration file. Add e1server access. Открываем удалённый доступ с первой ноды Jabber-сервера к базе ejabberd-domain-local для пользователя ejabberd.
+      postgresql_pg_hba:
+        dest: /etc/postgresql/15/main/pg_hba.conf
+        contype: host
+        users: ejabberd
+        source: 192.168.1.2
+        databases: ejabberd-domain-local
+        method: scram-sha-256
+        create: true
+    - name: Edit pg_hba configuration file. Add e2server access. Открываем удалённый доступ со второй ноды Jabber-сервера к базе ejabberd-domain-local для пользователя ejabberd.
+      postgresql_pg_hba:
+        dest: /etc/postgresql/15/main/pg_hba.conf
+        contype: host
+        users: ejabberd
+        source: 192.168.1.3
+        databases: ejabberd-domain-local
+        method: scram-sha-256
+        create: true
+    - name: Edit postgresql.conf for enable all interfaces. Разрешаем входящие подключения к порту 5432 на всех интерфейсах.
+      ansible.builtin.shell: |
+        echo "listen_addresses = '*'" >> postgresql.conf
+        cp /home/vagrant/bacula-fd.conf /etc/bacula/
+        systemctl restart postgresql
+        systemctl restart bacula-fd.service
+      args:
+        executable: /bin/bash
+        chdir: /etc/postgresql/15/main/
+```
+
+Задача в _Ansible playbook_ - редактирование_pg\_hba.conf_ для предоставления доступа пользователю _replica_role_ для выполнения репликации. Выполняется на _Master_:
+```
+    - name: Edit pg_hba configuration file. Access for Replica from psql2server. Разрешаем удалённое подключение пользователю replica_role для получения wal принимающим сервером.
+      postgresql_pg_hba:
+        dest: /etc/postgresql/15/main/pg_hba.conf
+        contype: host
+        users: replica_role
+        source: 192.168.1.11
+        databases: replication
+        method: scram-sha-256
+```
+Задача в _Ansible playbook_ - редактирование_pg\_hba.conf_ для предоставления доступа пользователю _replica_role_ для выполнения репликации. Выполняется на _Replica_:
+```
+    - name: Edit pg_hba configuration file. Access for Replica from psql1server. Разрешаем удалённое подключение пользователю replica_role для получения wal принимающим сервером.
+      postgresql_pg_hba:
+        dest: /etc/postgresql/15/main/pg_hba.conf
+        contype: host
+        users: replica_role
+        source: 192.168.1.10
+        databases: replication
+        method: scram-sha-256
+```
