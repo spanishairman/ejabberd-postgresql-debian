@@ -372,18 +372,19 @@ host_config:
 e1server ansible_host=192.168.121.10 ansible_port=22 ansible_private_key_file=/home/max/vagrant/vg3/.vagrant/machines/Debian12-eJabberd1/libvirt/private_key
 e2server ansible_host=192.168.121.11 ansible_port=22 ansible_private_key_file=/home/max/vagrant/vg3/.vagrant/machines/Debian12-eJabberd2/libvirt/private_key
 ```
-Таким образом, файлы конфигурации на обоих серверах имеют одинаковые настройки. Теперь создадим кластер из этих двух серверов. Нам потребуется на каждом сервере изменить имя ноды со значения по умолчанию "ejabberd@localhost" на "ejabberd@hostname", 
-это необходимо для того, чтобы обеспечить уникальность имён узлов в кластере.
+Таким образом, файлы конфигурации на обоих серверах имеют одинаковые настройки. Теперь создадим кластер из этих двух серверов. 
+Нам потребуется на каждом сервере изменить имя ноды со значения по умолчанию "ejabberd@localhost" на "ejabberd@hostname". 
+Это необходимо для того, чтобы обеспечить уникальность имён узлов в кластере.
 
 Инструкция по переименованию имени узла находится [здесь](https://docs.ejabberd.im/admin/guide/managing/#change-computer-hostname).
 
 Соответствующая задача в _ansible playbook_ выглядит следующим образом:
 ```
-- name: eJabberd | Confgure ejservers.
+- name: eJabberd | Group of servers "ejserver". Confgure Erlang. Pre-configuration for creating a cluster
   hosts: ejserver
   become: true
   tasks:
-    - name: Change default Erlang node. Изменим имя узла, используемое по умолчанию, на привязанное к имени хоста. ejabberd@localhost -> ejabberd@hostname. Укажем допустимый диапазон портов.
+    - name: Change default Erlang node. Change default nodename for use a %HOSTNAME. ejabberd@localhost -> ejabberd@hostname. Specify the acceptable range of ports
       ansible.builtin.shell: |
         OLDNODE=ejabberd@localhost
         NEWNODE=ejabberd@$HOSTNAME
@@ -394,7 +395,6 @@ e2server ansible_host=192.168.121.11 ansible_port=22 ansible_private_key_file=/h
         ejabberdctl --node $OLDNODE backup $OLDFILE
         ejabberdctl --node $OLDNODE stop
         mv /var/lib/ejabberd/*.* /var/lib/ejabberd/oldfiles/
-        sed -i "s/#FIREWALL_WINDOW=/FIREWALL_WINDOW=4200-4210/" /etc/default/ejabberd
         sed -i "s/#ERLANG_NODE=ejabberd@localhost/ERLANG_NODE=$NEWNODE/" /etc/default/ejabberd
         ejabberdctl start
         ejabberdctl mnesia_change_nodename $OLDNODE $NEWNODE $OLDFILE $NEWFILE
@@ -405,7 +405,6 @@ e2server ansible_host=192.168.121.11 ansible_port=22 ansible_private_key_file=/h
       args:
         executable: /bin/bash
 ```
-Также, для обеспечения возможности синхронизации узлов кластера, мы изменили порты, используемые _Erlang_ с динамического на выделенный диапазон 4200-4210.
 
 После того, как имена узлов кластера были изменены, в системе сохраняются запущенными процессы, связанные со старыми _Erlang_-нодами. 
 Простой перезапуск главного процесса _ejabberd.service_ не сможет мрименить к ним настройки и приведёт к ошибке.
@@ -423,6 +422,10 @@ LISTEN  0      128                *:5280            *:*     users:(("beam.smp",p
 Поэтому потребуется завершить все процессы _beam.smp_, что приведёт к остановке процесса _ejabberd.service_, остановить сервис _epmd_, 
 после чего запустить _ejabberd.service_. Пример соответствующей задчи для _Ansible_:
 ```
+- name: eJabberd | Group of servers "ejserver". Confgure Erlang. Pre-configuration for creating a cluster
+  hosts: ejserver
+  become: true
+  tasks:
     - name: Reboot after change nofename. Перезагружаем сервисы для применения изменений.
       ansible.builtin.shell: |
         pkill -9 beam.smp
@@ -432,9 +435,24 @@ LISTEN  0      128                *:5280            *:*     users:(("beam.smp",p
       args:
         executable: /bin/bash
 ```
+Также, для обеспечения возможности синхронизации узлов кластера, изменим порты, используемые _Erlang_ с динамического на выделенный диапазон 4200-4210:
+```
+- name: eJabberd | Group of servers "ejserver". Confgure Erlang. Pre-configuration for creating a cluster
+  hosts: ejserver
+  become: true
+  tasks:
+    - name: Specify the acceptable range of ports.
+      ansible.builtin.shell: |
+        sed -i "s/#FIREWALL_WINDOW=/FIREWALL_WINDOW=4200-4210/" /etc/default/ejabberd
+        systemctl restart ejabberd.service
+        systemctl restart epmd.service
+      args:
+        executable: /bin/bash
+```
+
 Теперь создадим кластер:
 ```
-- name: eJabberd | Создаём кластер с подключением к нему узла.
+- name: eJabberd | Create a cluster
   hosts: e2server
   become: true
   tasks:
