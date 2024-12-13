@@ -112,6 +112,30 @@ Vagrant.configure("2") do |config|
 за исключением файерволла - установка iptables (nftables) и настройка правил осуществляется на этапе установки.
 
 ##### Ejabberd
+###### Общие настройки
+Для начала, изменим домен по умолчанию, который обслуживает наш сервер, это параметр _hosts_ в конфигурационном файле /etc/ejabberd/ejabberd.yml:
+```
+# hosts: Domains served by ejabberd.
+# You can define one or several, for example:
+# hosts:
+#   - "example.net"
+#   - "example.com"
+#   - "example.org"
+
+hosts:
+  - domain.local
+```
+Ansible playbook:
+```
+- name: eJabberd | Confgure ejservers for psql1server connect. Jabber-серверы, настраиваем домен, подключаем к СУБД.
+  hosts: ejserver
+  become: true
+  tasks:
+    - name: Edit ejabberd.yml for connection to remote db. Add admin.
+      ansible.builtin.shell: |
+        sed -i 's/localhost/domain.local/' ejabberd.yml
+```
+
 ###### Подключение к СУБД
 В нашем проекте основной компонент - _Ejabberd_ устновлен в кластерном исполнении на двух виртуальных машинах. По умолчанию, для своей работы _Ejabberd_ использует базу данных [Mnesia](https://www.erlang.org/doc/apps/mnesia/api-reference.html).
 Настройка на работу с [альтернативными СУБД](https://docs.ejabberd.im/admin/configuration/database/#supported-storages) - MySQL, PostgreSQL, MS SQL Server, SQLite, LDAP производится после установки сервиса. Также, начиная с версии 23.10, _Ejabberd_ 
@@ -227,3 +251,70 @@ host_config:
         chdir: /etc/ejabberd/
 ```
 Помимо настроек для подключения к БД, здесь так же задаются права админа для домена _domain.local_. Подробнее о виртуальных доменах в _Ejabberd_ можно ознакомиться [здесь](https://docs.ejabberd.im/admin/configuration/basic/#virtual-hosting).
+
+###### Создание кластера
+В предыдущем абзаце мы вносили изменения в конфигурационный файл _Ejabberd_, при этом все изменения синхронно применялись на обоих виртуальных серверах, включенных в группу хостов [ejserver] inventory-файла _Ansible_:
+```
+[ejserver]
+e1server ansible_host=192.168.121.10 ansible_port=22 ansible_private_key_file=/home/max/vagrant/vg3/.vagrant/machines/Debian12-eJabberd1/libvirt/private_key
+e2server ansible_host=192.168.121.11 ansible_port=22 ansible_private_key_file=/home/max/vagrant/vg3/.vagrant/machines/Debian12-eJabberd2/libvirt/private_key
+```
+Таким образом, файлы конфигурации на обоих серверах имеют одинаковые настройки. Теперь создадим кластер из этих двух серверов. Нам потребуется на каждом сервере изменить имя ноды со значения по умолчанию "ejabberd@localhost" на "ejabberd@hostname", 
+это необходимо для того, чтобы обеспечить уникальность имён узлов в кластере.
+
+Инструкция по переименованию имени узла находится [здесь](https://docs.ejabberd.im/admin/guide/managing/#change-computer-hostname).
+
+Соответствующая задача в _ansible playbook_ выглядит следующим образом:
+```
+- name: eJabberd | Confgure ejservers.
+  hosts: ejserver
+  become: true
+  tasks:
+    - name: Change default Erlang node. Изменим имя узла, используемое по умолчанию, на привязанное к имени хоста. ejabberd@localhost -> ejabberd@hostname. Укажем допустимый диапазон портов.
+      ansible.builtin.shell: |
+        OLDNODE=ejabberd@localhost
+        NEWNODE=ejabberd@$HOSTNAME
+        OLDFILE=/var/lib/ejabberd/oldfiles/old.backup
+        NEWFILE=/var/lib/ejabberd/new.backup
+        mkdir /var/lib/ejabberd/oldfiles
+        chown -R ejabbed:ejabberd /var/lib/ejabberd/oldfiles
+        ejabberdctl --node $OLDNODE backup $OLDFILE
+        ejabberdctl --node $OLDNODE stop
+        mv /var/lib/ejabberd/*.* /var/lib/ejabberd/oldfiles/
+        sed -i "s/#FIREWALL_WINDOW=/FIREWALL_WINDOW=4200-4210/" /etc/default/ejabberd
+        sed -i "s/#ERLANG_NODE=ejabberd@localhost/ERLANG_NODE=$NEWNODE/" /etc/default/ejabberd
+        ejabberdctl start
+        ejabberdctl mnesia_change_nodename $OLDNODE $NEWNODE $OLDFILE $NEWFILE
+        ejabberdctl install_fallback $NEWFILE
+        ejabberdctl stop
+        ejabberdctl start
+        echo 'HWSTFERDACTZHIEXBZGN' > /var/lib/ejabberd/.erlang.cookie
+      args:
+        executable: /bin/bash
+```
+Также, для обеспечения возможности синхронизации узлов кластера, мы изменили порты, используемые _Erlang_ с динамического на выделенный диапазон 4200-4210.
+
+После того, как имена узлов кластера были изменены, в системе сохраняются запущенными процессы, связанные со старыми нодами. Простой перезапуск главного процесса _ejabberd.service_ не сможет их перезапустить и приведёт к ошибке.
+```
+State        Recv-Q       Send-Q                     Local Address:Port                     Peer Address:Port               Process                                                                    
+LISTEN       0            128                              0.0.0.0:4200                          0.0.0.0:*                   users:(("beam.smp",pid=4833,fd=17))   
+LISTEN       0            4096                                   *:4369                                *:*                   users:(("epmd",pid=4820,fd=3),("systemd",pid=1,fd=54))   
+LISTEN       0            1000                                   *:1883                                *:*                   users:(("beam.smp",pid=4833,fd=31))   
+LISTEN       0            128                                    *:5443                                *:*                   users:(("beam.smp",pid=4833,fd=28))   
+LISTEN       0            128                                    *:5223                                *:*                   users:(("beam.smp",pid=4833,fd=26))   
+LISTEN       0            128                                    *:5222                                *:*                   users:(("beam.smp",pid=4833,fd=25))
+LISTEN       0            128                                    *:5269                                *:*                   users:(("beam.smp",pid=4833,fd=27))
+LISTEN       0            128                                    *:5280                                *:*                   users:(("beam.smp",pid=4833,fd=29))
+```
+Поэтому потребуется остановить все процессы _beam.smp_,что остановит сервисный процесс _ejabberd.service_, остановить сервис _epmd_, после чего запустить _ejabberd.service_. Пример соответствующей задчи для _Ansible_:
+```
+    - name: Reboot after change nofename. Перезагружаем сервисы для применения изменений.
+      ansible.builtin.shell: |
+        pkill -9 beam.smp
+        systemctl stop epmd.service
+        sleep 5
+        systemctl start ejabberd.service
+      args:
+        executable: /bin/bash
+```
+
