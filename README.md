@@ -348,6 +348,20 @@ host_config:
       args:
         executable: /bin/bash
         chdir: /etc/ejabberd/
+- name: eJabberd | e2server. Configuring the e2server server certificate
+  hosts: e2server
+  become: true
+  tasks:
+    - name: Edit ejabberd.yml
+      ansible.builtin.shell: |
+        cp /home/vagrant/e2server.pem .
+        chown root:ejabberd e2server.pem
+        chmod 640 e2server.pem
+        sed -i 's/ejabberd.pem/e2server.pem/' ejabberd.yml
+        systemctl restart ejabberd.service
+      args:
+        executable: /bin/bash
+        chdir: /etc/ejabberd/
 ```
 
 ###### Создание кластера
