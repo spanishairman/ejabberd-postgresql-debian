@@ -407,19 +407,21 @@ e2server ansible_host=192.168.121.11 ansible_port=22 ansible_private_key_file=/h
 ```
 Также, для обеспечения возможности синхронизации узлов кластера, мы изменили порты, используемые _Erlang_ с динамического на выделенный диапазон 4200-4210.
 
-После того, как имена узлов кластера были изменены, в системе сохраняются запущенными процессы, связанные со старыми нодами. Простой перезапуск главного процесса _ejabberd.service_ не сможет их перезапустить и приведёт к ошибке.
+После того, как имена узлов кластера были изменены, в системе сохраняются запущенными процессы, связанные со старыми _Erlang_-нодами. 
+Простой перезапуск главного процесса _ejabberd.service_ не сможет мрименить к ним настройки и приведёт к ошибке.
 ```
-State     Recv-Q   Send-Q   Local Address:Port   Peer Address:Port   Process                                                                    
-LISTEN    0        128            0.0.0.0:4200        0.0.0.0:*       users:(("beam.smp",pid=4833,fd=17))   
-LISTEN    0        4096                 *:4369              *:*       users:(("epmd",pid=4820,fd=3),("systemd",pid=1,fd=54))   
-LISTEN    0        1000                 *:1883              *:*       users:(("beam.smp",pid=4833,fd=31))   
-LISTEN    0        128                  *:5443              *:*       users:(("beam.smp",pid=4833,fd=28))   
-LISTEN    0        128                  *:5223              *:*       users:(("beam.smp",pid=4833,fd=26))   
-LISTEN    0        128                  *:5222              *:*       users:(("beam.smp",pid=4833,fd=25))
-LISTEN    0        128                  *:5269              *:*       users:(("beam.smp",pid=4833,fd=27))
-LISTEN    0        128                  *:5280              *:*       users:(("beam.smp",pid=4833,fd=29))
+State   Recv-Q Send-Q Local Address:Port Peer Address:Port Process                                                                    
+LISTEN  0      128          0.0.0.0:4200      0.0.0.0:*     users:(("beam.smp",pid=4833,fd=17))   
+LISTEN  0      4096               *:4369            *:*     users:(("epmd",pid=4820,fd=3),("systemd",pid=1,fd=54))   
+LISTEN  0      1000               *:1883            *:*     users:(("beam.smp",pid=4833,fd=31))   
+LISTEN  0      128                *:5443            *:*     users:(("beam.smp",pid=4833,fd=28))   
+LISTEN  0      128                *:5223            *:*     users:(("beam.smp",pid=4833,fd=26))   
+LISTEN  0      128                *:5222            *:*     users:(("beam.smp",pid=4833,fd=25))
+LISTEN  0      128                *:5269            *:*     users:(("beam.smp",pid=4833,fd=27))
+LISTEN  0      128                *:5280            *:*     users:(("beam.smp",pid=4833,fd=29))
 ```
-Поэтому потребуется последовательно остановить все процессы _beam.smp_, что остановит сервисный процесс _ejabberd.service_, остановить сервис _epmd_, после чего запустить _ejabberd.service_. Пример соответствующей задчи для _Ansible_:
+Поэтому потребуется завершить все процессы _beam.smp_, что приведёт к остановке процесса _ejabberd.service_, остановить сервис _epmd_, 
+после чего запустить _ejabberd.service_. Пример соответствующей задчи для _Ansible_:
 ```
     - name: Reboot after change nofename. Перезагружаем сервисы для применения изменений.
       ansible.builtin.shell: |
