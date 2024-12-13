@@ -328,8 +328,31 @@ host_config:
 
 ![Certificate](/pictures/cert.png)
 
+Предварительно созданные сертификаты загружаются в домашние каталоги пользователя _Vagrant_ соответствующих виртуальных серверов с помощью директивы `vm.provision "file"`. 
+Пример для сервера e1server:
+```
+  e1server.vm.provision "file", source: "ca/e1server.pem", destination: "~/e1server.pem"
+```
+После этого, в задаче _Ansible playbook_ производится настройка сервиса _ejabberd_:
+```
+- name: eJabberd | e1server. Create users - administrator and regular. Configuring the e1server server certificate
+  hosts: e1server
+  become: true
+  tasks:
+    - name: Configuring the e1server server certificate
+        cp /home/vagrant/e1server.pem .
+        chown root:ejabberd e1server.pem
+        chmod 640 e1server.pem
+        sed -i 's/ejabberd.pem/e1server.pem/' ejabberd.yml
+        systemctl restart ejabberd.service
+      args:
+        executable: /bin/bash
+        chdir: /etc/ejabberd/
+```
+
 ###### Создание кластера
-В предыдущем абзаце мы вносили изменения в конфигурационный файл _Ejabberd_, при этом все изменения синхронно применялись на обоих виртуальных серверах, включенных в группу хостов [ejserver] inventory-файла _Ansible_:
+В предыдущем абзаце мы вносили изменения в конфигурационный файл _Ejabberd_, при этом все изменения синхронно применялись на обоих виртуальных серверах, 
+включенных в группу хостов [ejserver] inventory-файла _Ansible_:
 ```
 [ejserver]
 e1server ansible_host=192.168.121.10 ansible_port=22 ansible_private_key_file=/home/max/vagrant/vg3/.vagrant/machines/Debian12-eJabberd1/libvirt/private_key
