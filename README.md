@@ -102,18 +102,46 @@ Vagrant.configure("2") do |config|
       echo 'up ip route restore < /etc/my-routes' >> /etc/network/interfaces
       SHELL
 ```
-Здесь используются те же правила, что и в стандартном _bash_ - знак _#_ в начале строки является комментарием, пустые строки игнорируются. 
+В блоке `provision "shell"` используются те же правила, что и в стандартном _bash_ - знак _#_ в начале строки является комментарием, пустые строки игнорируются. 
 Также работают системные  переменные, что позволяет не использовать полные пути к исполняемым командам.
 
 > [!IMPORTANT]
 > _vm.provision "file"_ Выполняется с правами пользователя _vagrant_, в то время, как _vm.provision "shell"_ работает с привелегиями суперпользоваттеля. Это необходимо учитывать, планируя послеустановочную настройку системы.
 
-Все виртуальные узлы в данном стенде разворачиваются с помощью описаний в _Vagrant_ файле. При этом, установка и настройка прикладного программного обеспечения производится после с помощью _Ansible_, 
+Все виртуальные узлы в данном стенде разворачиваются с помощью команд, правил и описаний в _Vagrant_ файле. 
+При этом, установка и настройка прикладного программного обеспечения производится после с помощью _Ansible_, 
 за исключением файерволла - установка iptables (nftables) и настройка правил осуществляется на этапе установки.
 
 ##### Ejabberd
+###### Установка
+Установка _Ejabberd_ производится из репозиториев "bookworm-backports". Для этого создаём следующую задачу:
+```
+- name: eJabberd | Group of servers "ejserver". Install and configure ejabberd. Installing "ejabberd" and "bacula-client" packages on the "ejserver" server group
+  hosts: ejserver
+  become: true
+  tasks:
+    - name: APT. Add Backports repository into sources list
+      ansible.builtin.apt_repository:
+        repo: deb http://deb.debian.org/debian bookworm-backports main contrib non-free
+        state: present
+    - name: APT. Update the repository cache and install packages "eJabberd", "erlang-p1-pgsql", "python3-psycopg2", "acl", "bacula-client" to latest version using default release bookworm-b>
+      ansible.builtin.apt:
+        name: ejabberd,erlang-p1-pgsql,python3-psycopg2,acl,bacula-client
+        state: present
+        default_release: bookworm-backports
+        update_cache: yes
+    - name: Bacula-client. Copy configuration file. Restart of service
+      ansible.builtin.shell: |
+        cp /home/vagrant/bacula-fd.conf /etc/bacula/
+        systemctl restart bacula-fd.service
+      args:
+        executable: /bin/bash
+```
+В которой мы добавили новый репозиторий и установили необходимое ПО, указав в качестве источника "bookworm-backports". 
+Помимо _Ejabberd_ в ней так же ставится клиент системы резервного копирования - _Bacula_.
+
 ###### Общие настройки
-Для начала, изменим домен по умолчанию, который обслуживает наш сервер. Это параметр _hosts_ в конфигурационном файле /etc/ejabberd/ejabberd.yml:
+Изменим домен по умолчанию, который обслуживает наш сервер. Это параметр _hosts_ в конфигурационном файле /etc/ejabberd/ejabberd.yml:
 ```
 # hosts: Domains served by ejabberd.
 # You can define one or several, for example:
@@ -127,14 +155,40 @@ hosts:
 ```
 Ansible playbook:
 ```
-- name: eJabberd | Confgure ejservers for psql1server connect. Jabber-серверы, настраиваем домен, подключаем к СУБД.
+- name: eJabberd | Group of servers "ejserver". Confgure ejservers for domainname and psql1server connect. Granting administrator account rights
   hosts: ejserver
   become: true
   tasks:
-    - name: Edit ejabberd.yml for connection to remote db. Add admin.
+    - name: Edit ejabberd.yml for domainname.
       ansible.builtin.shell: |
         sed -i 's/localhost/domain.local/' ejabberd.yml
+      args:
+        executable: /bin/bash
+        chdir: /etc/ejabberd/
 ```
+<a name="admin-rights-point"></a>
+Зададим права админа для домена _domain.local_. 
+```
+- name: eJabberd | Group of servers "ejserver". Confgure ejservers for domainname and psql1server connect. Granting administrator account rights
+  hosts: ejserver
+  become: true
+  tasks:
+    - name: Edit ejabberd.yml for granting administrator account rights.
+        echo ''  >> ejabberd.yml
+        echo '    acl:'  >> ejabberd.yml
+        echo '      admin:'  >> ejabberd.yml
+        echo '        user: admin@domain.local'  >> ejabberd.yml
+        echo ''  >> ejabberd.yml
+        echo '    access_rules:'  >> ejabberd.yml
+        echo '      configure:'  >> ejabberd.yml
+        echo '        allow: admin'  >> ejabberd.yml
+        systemctl restart ejabberd.service
+      args:
+        executable: /bin/bash
+        chdir: /etc/ejabberd/
+```
+Подробнее о виртуальных доменах в _Ejabberd_ можно ознакомиться [здесь](https://docs.ejabberd.im/admin/configuration/basic/#virtual-hosting).
+
 
 ###### Подключение к СУБД
 В нашем проекте основной компонент - _Ejabberd_ устновлен в кластерном исполнении на двух виртуальных машинах. По умолчанию, для своей работы _Ejabberd_ использует базу данных [Mnesia](https://www.erlang.org/doc/apps/mnesia/api-reference.html).
@@ -154,30 +208,31 @@ psql -d ejabberd-domain-local -f /usr/share/ejabberd/sql/pg.sql
 
 Эти шаги, выполненяемые в _Ansible_ и описанные в yml-файле. Создание базы и пользователя:
 ```
-- name: PostgreSQL | Primary Server. Create database and role. Создаём базу данных и пользователя с полными правами на неё на Primary экземпляре сервера баз данных.
+- name: PostgreSQL | Primary Server. Create database "ejabberd_domain_local" and role "ejabberd" on the Primary.
   hosts: psql1server
   become: true
   become_user: postgres
   vars:
     allow_world_readable_tmpfiles: true
-    - name: Create a new database with name "ejabberd-domain-local". Создаём базу данных Jabber-сервера.
+  tasks:
+    - name: Create a new database with name "ejabberd-domain-local".
       community.postgresql.postgresql_db:
         name: ejabberd-domain-local
         comment: "eJabberd database"
-    - name: Connect to eJabberd database, create ejabberd user, and grant access to database and all tables. Создаём пользователя с правами на эту базу данных.
+    - name: Connect to eJabberd database, create "ejabberd" user, and grant access to database and all tables.
       community.postgresql.postgresql_user:
         db: ejabberd-domain-local
         name: ejabberd
-        password: P@ssw0rd
+        password: Inc0gn1t0
         expires: "infinity"
-    - name: Connect to eJabberd database, grant privileges on ejabberd-domain-local database objects (database). Задаём привелегии на базу данных ejabberd-domain-local для пользователя ejabberd.
+    - name: Connect to eJabberd database, grant privileges on "ejabberd-domain-local" database objects (database) for "ejabberd" role.
       community.postgresql.postgresql_privs:
         database: ejabberd-domain-local
         state: present
         privs: ALL
         type: database
         roles: ejabberd
-    - name: Connect to eJabberd database, grant privileges on ejabberd-domain-local database objects (schema). Задаём привелегии на объект Schema для пользователя ejabberd.
+    - name: Connect to eJabberd database, grant privileges on "ejabberd-domain-local" database objects (schema) for "ejabberd" role.
       community.postgresql.postgresql_privs:
         database: ejabberd-domain-local
         state: present
@@ -188,10 +243,10 @@ psql -d ejabberd-domain-local -f /usr/share/ejabberd/sql/pg.sql
 ```
 Создание структуры БД:
 ```
-- name: PostgreSQL | Create tables at database ejabberd-domain-local. Создание таблиц в базе данных ejabberd-domain-local "главного" сервера баз данных. Запуск скрипта производится удалённо.
+- name: PostgreSQL | Creating tables in the database "ejabberd-domain-local" on the Master. Remote connection
   hosts: e1server
   tasks:
-    - name: Connect from e1server to psql1server and run script
+    - name: Connect from e1server to psql1server and run script.
       postgresql_query:
         login_host: 192.168.1.10
         db: ejabberd-domain-local
@@ -203,7 +258,8 @@ psql -d ejabberd-domain-local -f /usr/share/ejabberd/sql/pg.sql
 > Обратите внимание, создание базы данных, роли, а также выполнение скрипта, создающего таблицы в данной базе, выполняются только на одном из серверов будущего кластера СУБД. Все данные с этого сервера
 > будут скопированы на второй в процессе потоковой репликации, которая будет выполнена позже.
 
-После того, как база данных и роль для работы с ней были созданы, потребуется настроить _Ejabberd_ для работы с ней. Для этого отредактируем главный конфигурационный файл - /etc/ejabberd/ejabberd.yml, добавив следующие строки:
+После того, как база данных и роль для работы с ней были созданы, потребуется настроить _Ejabberd_ для работы с ней. 
+Для этого отредактируем главный конфигурационный файл - /etc/ejabberd/ejabberd.yml, добавив следующие строки:
 ```
 # Database settings
 host_config:
@@ -219,13 +275,12 @@ host_config:
 
 В _Ansible_ задача выглядит так:
 ```
-- name: eJabberd | Confgure ejservers for psql1server connect. Jabber-серверы, настраиваем домен, подключаем к СУБД.
+- name: eJabberd | Group of servers "ejserver". Confgure ejservers for domainname and psql1server connect. Granting administrator account rights
   hosts: ejserver
   become: true
   tasks:
-    - name: Edit ejabberd.yml for connection to remote db. Add admin.
+    - name: Edit ejabberd.yml for connection to remote db.
       ansible.builtin.shell: |
-        sed -i 's/localhost/domain.local/' ejabberd.yml
         echo ''  >> ejabberd.yml
         echo '# Database settings' >> ejabberd.yml
         echo 'host_config:' >> ejabberd.yml
@@ -237,20 +292,25 @@ host_config:
         echo '    sql_password: Inc0gn1t0' >> ejabberd.yml
         echo '    auth_method:' >> ejabberd.yml
         echo '      - sql' >> ejabberd.yml
-        echo ''  >> ejabberd.yml
-        echo '    acl:'  >> ejabberd.yml
-        echo '      admin:'  >> ejabberd.yml
-        echo '        user: admin@domain.local'  >> ejabberd.yml
-        echo ''  >> ejabberd.yml
-        echo '    access_rules:'  >> ejabberd.yml
-        echo '      configure:'  >> ejabberd.yml
-        echo '        allow: admin'  >> ejabberd.yml
-        systemctl restart ejabberd.service
       args:
         executable: /bin/bash
         chdir: /etc/ejabberd/
 ```
-Помимо настроек для подключения к БД, здесь так же задаются права админа для домена _domain.local_. Подробнее о виртуальных доменах в _Ejabberd_ можно ознакомиться [здесь](https://docs.ejabberd.im/admin/configuration/basic/#virtual-hosting).
+
+###### Управление пользователями
+[Ранее](#admin-rights-point) мы уже назначили администратора для домена __domain.local__. Теперь заведем соответствующую учётную запись, а вместе с ней и обычного пользователя.
+```
+- name: eJabberd | e1server. Create users - administrator and regular. Configuring the e1server server certificate
+  hosts: e1server
+  become: true
+  tasks:
+    - name: Add users. Edit ejabberd.yml
+      ansible.builtin.shell: |
+        ejabberdctl register admin domain.local Inc0gn1t0
+        ejabberdctl register max domain.local P@$$w0rd
+      args:
+        executable: /bin/bash
+```
 
 ###### Создание кластера
 В предыдущем абзаце мы вносили изменения в конфигурационный файл _Ejabberd_, при этом все изменения синхронно применялись на обоих виртуальных серверах, включенных в группу хостов [ejserver] inventory-файла _Ansible_:
