@@ -167,7 +167,7 @@ Ansible playbook:
         chdir: /etc/ejabberd/
 ```
 <a name="admin-rights-point"></a>
-Зададим права админа для домена _domain.local_. 
+Зададим права админа для домена _domain.local_. Ansible playbook: 
 ```
 - name: eJabberd | Group of servers "ejserver". Confgure ejservers for domainname and psql1server connect. Granting administrator account rights
   hosts: ejserver
