@@ -113,7 +113,7 @@ Vagrant.configure("2") do |config|
 
 ##### Ejabberd
 ###### Общие настройки
-Для начала, изменим домен по умолчанию, который обслуживает наш сервер, это параметр _hosts_ в конфигурационном файле /etc/ejabberd/ejabberd.yml:
+Для начала, изменим домен по умолчанию, который обслуживает наш сервер. Это параметр _hosts_ в конфигурационном файле /etc/ejabberd/ejabberd.yml:
 ```
 # hosts: Domains served by ejabberd.
 # You can define one or several, for example:
