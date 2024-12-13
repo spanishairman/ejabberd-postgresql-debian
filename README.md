@@ -112,6 +112,114 @@ Vagrant.configure("2") do |config|
 за исключением файерволла - установка iptables (nftables) и настройка правил осуществляется на этапе установки.
 
 ##### Ejabberd
+###### Подключение к СУБД
 В нашем проекте основной компонент - _Ejabberd_ устновлен в кластерном исполнении на двух виртуальных машинах. По умолчанию, для своей работы _Ejabberd_ использует базу данных [Mnesia](https://www.erlang.org/doc/apps/mnesia/api-reference.html).
 Настройка на работу с [альтернативными СУБД](https://docs.ejabberd.im/admin/configuration/database/#supported-storages) - MySQL, PostgreSQL, MS SQL Server, SQLite, LDAP производится после установки сервиса. Также, начиная с версии 23.10, _Ejabberd_ 
 позволяет с помощью параметра _update\_sql\_schema_ автоматически создавать и обновлять таблицы в базе данных SQL при использовании MySQL, PostgreSQL или SQLite.
+
+Для создания базы данных,а так же роли с правами на эту базу подойдут следующие команды:
+```
+CREATE DATABASE "ejabberd-domain-local"
+CREATE USER ejabberd WITH PASSWORD 'P@ssw0rd';
+GRANT ALL ON DATABASE "ejabberd-domain-local" TO ejabberd;
+```
+Создание структуры базы данных:
+```
+psql -d ejabberd-domain-local -f /usr/share/ejabberd/sql/pg.sql
+```
+
+Эти шаги, выполненяемые в _Ansible_ и описанные в yml-файле. Создание базы и пользователя:
+```
+- name: PostgreSQL | Primary Server. Create database and role. Создаём базу данных и пользователя с полными правами на неё на Primary экземпляре сервера баз данных.
+  hosts: psql1server
+  become: true
+  become_user: postgres
+  vars:
+    allow_world_readable_tmpfiles: true
+    - name: Create a new database with name "ejabberd-domain-local". Создаём базу данных Jabber-сервера.
+      community.postgresql.postgresql_db:
+        name: ejabberd-domain-local
+        comment: "eJabberd database"
+    - name: Connect to eJabberd database, create ejabberd user, and grant access to database and all tables. Создаём пользователя с правами на эту базу данных.
+      community.postgresql.postgresql_user:
+        db: ejabberd-domain-local
+        name: ejabberd
+        password: P@ssw0rd
+        expires: "infinity"
+    - name: Connect to eJabberd database, grant privileges on ejabberd-domain-local database objects (database). Задаём привелегии на базу данных ejabberd-domain-local для пользователя ejabberd.
+      community.postgresql.postgresql_privs:
+        database: ejabberd-domain-local
+        state: present
+        privs: ALL
+        type: database
+        roles: ejabberd
+    - name: Connect to eJabberd database, grant privileges on ejabberd-domain-local database objects (schema). Задаём привелегии на объект Schema для пользователя ejabberd.
+      community.postgresql.postgresql_privs:
+        database: ejabberd-domain-local
+        state: present
+        privs: CREATE
+        type: schema
+        objs: public
+        roles: ejabberd
+```
+Создание структуры БД:
+```
+- name: PostgreSQL | Create tables at database ejabberd-domain-local. Создание таблиц в базе данных ejabberd-domain-local "главного" сервера баз данных. Запуск скрипта производится удалённо.
+  hosts: e1server
+  tasks:
+    - name: Connect from e1server to psql1server and run script
+      postgresql_query:
+        login_host: 192.168.1.10
+        db: ejabberd-domain-local
+        login_user: ejabberd
+        login_password: Inc0gn1t0
+        path_to_script: /usr/share/ejabberd/sql/pg.sql
+```
+
+После того, как база данных и роль для работы с ней были созданы, потребуется настроить _Ejabberd_ для работы с ней. Для этого отредактируем главный конфигурационный файл - /etc/ejabberd/ejabberd.yml, добавив следующие строки:
+```
+# Database settings
+host_config:
+  domain.local:
+    sql_type: pgsql
+    sql_server: 192.168.1.10
+    sql_database: ejabberd-domain-local
+    sql_username: ejabberd
+    sql_password: P@ssw0rd
+    auth_method:
+      - sql
+```
+
+В _Ansible_ задача выглядит так:
+```
+- name: eJabberd | Confgure ejservers for psql1server connect. Jabber-серверы, настраиваем домен, подключаем к СУБД.
+  hosts: ejserver
+  become: true
+  tasks:
+    - name: Edit ejabberd.yml for connection to remote db. Add admin.
+      ansible.builtin.shell: |
+        sed -i 's/localhost/domain.local/' ejabberd.yml
+        echo ''  >> ejabberd.yml
+        echo '# Database settings' >> ejabberd.yml
+        echo 'host_config:' >> ejabberd.yml
+        echo '  domain.local:' >> ejabberd.yml
+        echo '    sql_type: pgsql' >> ejabberd.yml
+        echo '    sql_server: 192.168.1.10' >> ejabberd.yml
+        echo '    sql_database: ejabberd-domain-local' >> ejabberd.yml
+        echo '    sql_username: ejabberd' >> ejabberd.yml
+        echo '    sql_password: Inc0gn1t0' >> ejabberd.yml
+        echo '    auth_method:' >> ejabberd.yml
+        echo '      - sql' >> ejabberd.yml
+        echo ''  >> ejabberd.yml
+        echo '    acl:'  >> ejabberd.yml
+        echo '      admin:'  >> ejabberd.yml
+        echo '        user: admin@domain.local'  >> ejabberd.yml
+        echo ''  >> ejabberd.yml
+        echo '    access_rules:'  >> ejabberd.yml
+        echo '      configure:'  >> ejabberd.yml
+        echo '        allow: admin'  >> ejabberd.yml
+        systemctl restart ejabberd.service
+      args:
+        executable: /bin/bash
+        chdir: /etc/ejabberd/
+```
