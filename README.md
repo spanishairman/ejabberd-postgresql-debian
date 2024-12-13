@@ -197,7 +197,7 @@ Ansible playbook:
 Настройка на работу с [альтернативными СУБД](https://docs.ejabberd.im/admin/configuration/database/#supported-storages) - MySQL, PostgreSQL, MS SQL Server, SQLite, LDAP производится после установки сервиса. Также, начиная с версии 23.10, _Ejabberd_ 
 позволяет с помощью параметра _update\_sql\_schema_ автоматически создавать и обновлять таблицы в базе данных SQL при использовании MySQL, PostgreSQL или SQLite.
 
-Для создания базы данных,а так же роли с правами на эту базу подойдут следующие команды:
+Для создания базы данных, а так же роли с правами на эту базу подойдут следующие команды:
 ```
 CREATE DATABASE "ejabberd-domain-local"
 CREATE USER ejabberd WITH PASSWORD 'P@ssw0rd';
@@ -208,7 +208,7 @@ GRANT ALL ON DATABASE "ejabberd-domain-local" TO ejabberd;
 psql -d ejabberd-domain-local -f /usr/share/ejabberd/sql/pg.sql
 ```
 
-Эти шаги, выполненяемые в _Ansible_ и описанные в yml-файле. Создание базы и пользователя:
+Эти шаги, выполняемые в _Ansible_, в yml-файле будут выглядеть так - создание базы и пользователя:
 ```
 - name: PostgreSQL | Primary Server. Create database "ejabberd_domain_local" and role "ejabberd" on the Primary.
   hosts: psql1server
