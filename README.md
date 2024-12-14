@@ -580,7 +580,7 @@ host    all     all     ::1/128 scram-sha-256
 На сервере резервных копий будут храниться копии каталогов _/etc_ серверов _e1server_и _e2server_, 
 а также резервные копии базы _ejabberd-domain-local_, снятые с сервера psql2server (Replica)
 
-> ![NOTE]
+> [!NOTE]
 > На этом же сервере - bk1server, в каталогах _/srv/share/upload/psql{1,2}server/{backup,archive}/, предоставляемых для монтирования по протоколу nfs серверам psql1server и psql2server, 
 > сохраняются копии PostgreSQL-кластера соответствующих серверов, а так же их журналы WAL.
 
