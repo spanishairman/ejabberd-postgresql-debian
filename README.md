@@ -653,6 +653,65 @@ Job {
 которые описывают параметры резервного копирования для разных наборов файлов, пулов томов, расписаний и пр. 
 Подробное описание настройки и работы с _Bacula_ можно найти [здесь](https://github.com/spanishairman/bacula-debian).
 
+###### Filesets
+
+Наборы архивируемых файлов описываются в соответствующем блоке настроек. Здесь у нас набор _My-fs-FS_, котрый содержит каталог _/etc_ и _My-psql-FS_ - в этом наборе 
+содержится описание каталога /bacula-backup/. 
+
+> [!NOTE]
+> В каталог _/bacula-backup/_ попадает резервная копия базы данных _ejabberd-domain-local_, которая создаётся с помощью скрипта _/etc/bacula/scripts/bacula-before-dump.sh_, 
+> запускаемого непосредственно перед выполнением задачи резервного копирования. Таким образом - сначала выполняется скрипт, создающий дамп базы данных в каталоге /bacula-backup/,
+> затем содержимое этого каталога архивируется на сервер резервных копий
+
+Содержимое скрипта _/etc/bacula/scripts/bacula-before-dump.sh_:
+```
+#!/bin/bash
+# Пример pg_dump со сжатием:
+# sudo -u postgres pg_dump -d ejabberd | gzip > /media/backup/dump/ejabberd.sql.gz
+# Мы делаем без сжатия, так как сжимать файлы будет bacula
+postgreshome="/var/lib/postgresql"
+cd $postgreshome
+sudo -u postgres pg_dump -d ejabberd-domain-local > /bacula-backup/ejabberd.sql
+```
+
+```
+# My-filesets
+
+FileSet {
+  Name = "My-fs-FS"
+  Enable VSS = yes
+  Include {
+    Options {
+      Signature = SHA1
+      Compression = LZO
+      No Atime = yes
+      Sparse = yes
+      Checkfilechanges = yes
+      IgnoreCase = no
+    }
+    File = "/etc"
+  # File = "/var"
+  }
+}
+
+FileSet {
+  Name = "My-psql-FS"
+  Enable VSS = yes
+  Include {
+    Options {
+      Signature = SHA1
+      Compression = GZIP
+      No Atime = yes
+      Sparse = yes
+      Checkfilechanges = yes
+      IgnoreCase = no
+    }
+    File = "/bacula-backup"
+  }
+}
+
+```
+
 ###### Clients
 Описание клиентов сервера  в конфигурационном файле  _/etc/bacula/bacula-dir.conf_:
 ```
