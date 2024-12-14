@@ -581,7 +581,7 @@ host    all     all     ::1/128 scram-sha-256
 а также резервные копии базы _ejabberd-domain-local_, снятые с сервера psql2server (Replica)
 
 > [!NOTE]
-> На этом же сервере - bk1server, в каталогах _/srv/share/upload/psql{1,2}server/{backup,archive}/, предоставляемых для монтирования по протоколу nfs серверам psql1server и psql2server, 
+> На этом же сервере - _bk1server_, в каталогах _/srv/share/upload/psql{1,2}server/{backup,archive}/_, предоставляемых для монтирования по протоколу nfs серверам psql1server и psql2server, 
 > сохраняются копии PostgreSQL-кластера соответствующих серверов, а так же их журналы WAL.
 
 ###### Jobs
