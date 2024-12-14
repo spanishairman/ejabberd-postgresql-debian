@@ -574,3 +574,133 @@ host    all     all     ::1/128 scram-sha-256
         databases: replication
         method: scram-sha-256
 ```
+##### Bacula
+В качестве системы резервного копирования для долговременного хранения копий баз данных и конфигураций приложений будем использовать [Bacula](https://www.bacula.org/)
+
+На сервере резервных копий будут храниться копии каталогов _/etc_ серверов _e1server_и _e2server_, 
+а также резервные копии базы _ejabberd-domain-local_, снятые с сервера psql2server (Replica)
+
+> ![NOTE]
+> На этом же сервере - bk1server, в каталогах _/srv/share/upload/psql{1,2}server/{backup,archive}/, предоставляемых для монтирования по протоколу nfs серверам psql1server и psql2server, 
+> сохраняются копии PostgreSQL-кластера соответствующих серверов, а так же их журналы WAL.
+
+###### Jobs
+```
+# My jobs and jobdefs
+
+JobDefs {
+  Name = "My-JobDef-Tpl"
+  Type = Backup
+  Storage = bk1server-sd
+  Messages = Standard
+  SpoolAttributes = yes
+  Priority = 10
+  Write Bootstrap = "/var/lib/bacula/%c.bsr"
+}
+
+Job {
+  Name = "e1-fs-Job"
+  FileSet = "My-fs-FS"
+  Pool = e1-fs-Full
+  Full Backup Pool = e1-fs-Full                  # write Full Backups into "Full" Pool         (#05)
+  Differential Backup Pool = e1-fs-Diff
+  Incremental Backup Pool = e1-fs-Incr           # write Incr Backups into "Incremental" Pool  (#11)
+  Schedule = "e1-fs-Sdl"
+  JobDefs = "My-JobDef-Tpl"
+  Client = "e1server-fd"
+}
+
+Job {
+  Name = "e2-fs-Job"
+  FileSet = "My-fs-FS"
+  Pool = e2-fs-Full
+  Full Backup Pool = e2-fs-Full                  # write Full Backups into "Full" Pool         (#05)
+  Differential Backup Pool = e2-fs-Diff
+  Incremental Backup Pool = e2-fs-Incr           # write Incr Backups into "Incremental" Pool  (#11)
+  Schedule = "e2-fs-Sdl"
+  JobDefs = "My-JobDef-Tpl"
+  Client = "e2server-fd"
+}
+
+Job {
+  Name = "MyRestoreFiles"
+  Type = Restore
+  Client=bk1server-fd
+  Storage = bk1server-sd
+# The FileSet and Pool directives are not used by Restore Jobs  but must not be removed
+  FileSet="Full Set"
+  Pool = File
+  Messages = Standard
+  Where = /bacula-restores
+}
+
+Job {
+  Name = "psql2-fs-Job"
+  FileSet = "My-psql-FS"
+  Pool = psql2-fs-Full
+  Full Backup Pool = psql2-fs-Full                  # write Full Backups into "Full" Pool         (#05)
+  Differential Backup Pool = psql2-fs-Diff
+  Incremental Backup Pool = psql2-fs-Incr           # write Incr Backups into "Incremental" Pool  (#11)
+  Schedule = "psql2-fs-Sdl"
+  JobDefs = "My-JobDef-Tpl"
+  Client = "psql2server-fd"
+  ClientRunBeforeJob = "/etc/bacula/scripts/bacula-before-dump.sh" # скрипт выполняющийся до задачи
+  ClientRunAfterJob = "/etc/bacula/scripts/bacula-after-dump.sh" # скрипт выполняющийся после задачи
+}
+
+```
+В данном блоке описан шаблон для задач - _My-JobDef-Tpl_, в котором собраны общие для нескольких задач параметры, задача для восстановления - _MyRestoreFiles_ и остальные задачи, 
+которые описывают параметры резервного копирования для разных наборов файлов, пулов томов, расписаний и пр. 
+Подробное описание настройки и работы с _Bacula_ можно найти [здесь](https://github.com/spanishairman/bacula-debian).
+
+###### Clients
+Описание клиентов сервера  в конфигурационном файле  _/etc/bacula/bacula-dir.conf_:
+```
+# Client (File Services) to backup
+Client {
+  Name = e1server-fd
+  Address = 192.168.1.2
+  FDPort = 9102
+  Catalog = MyCatalog
+  Password = "DYrPl1SQnGYgUHDy809bU6ejZyo-N97m4"          # password for FileDaemon
+  File Retention = 365 days           # 60 days
+  Job Retention = 12 months           # six months
+  AutoPrune = yes                     # Prune expired Jobs/Files
+}
+
+# Client (File Services) to backup
+Client {
+  Name = e2server-fd
+  Address = 192.168.1.3
+  FDPort = 9102
+  Catalog = MyCatalog
+  Password = "tyWfHO1Bp3joollMSdXggFoeBoMTPZF8G"          # password for FileDaemon
+  File Retention = 365 days           # 60 days
+  Job Retention = 12 months           # six months
+  AutoPrune = yes                     # Prune expired Jobs/Files
+}
+
+# Client (File Services) to backup
+Client {
+  Name = psql1server-fd
+  Address = 192.168.1.10
+  FDPort = 9102
+  Catalog = MyCatalog
+  Password = "psXJhsM7F9pX4ikzuymM7JzeLFbaRiuuJt"          # password for FileDaemon
+  File Retention = 365 days           # 60 days
+  Job Retention = 12 months           # six months
+  AutoPrune = yes                     # Prune expired Jobs/Files
+}
+
+# Client (File Services) to backup
+Client {
+  Name = psql2server-fd
+  Address = 192.168.1.11
+  FDPort = 9102
+  Catalog = MyCatalog
+  Password = "XoPVaXygpP3EuWKypKqvLXKJAEr7haMTrK"          # password for FileDaemon
+  File Retention = 365 days           # 60 days
+  Job Retention = 12 months           # six months
+  AutoPrune = yes                     # Prune expired Jobs/Files
+}
+```
