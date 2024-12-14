@@ -176,6 +176,7 @@ Ansible playbook:
   become: true
   tasks:
     - name: Edit ejabberd.yml for granting administrator account rights.
+      ansible.builtin.shell: |
         echo ''  >> ejabberd.yml
         echo '    acl:'  >> ejabberd.yml
         echo '      admin:'  >> ejabberd.yml
@@ -342,6 +343,7 @@ host_config:
   become: true
   tasks:
     - name: Configuring the e1server server certificate
+      ansible.builtin.shell: |
         cp /home/vagrant/e1server.pem .
         chown root:ejabberd e1server.pem
         chmod 640 e1server.pem
@@ -420,7 +422,7 @@ LISTEN  0      128                *:5222            *:*     users:(("beam.smp",p
 LISTEN  0      128                *:5269            *:*     users:(("beam.smp",pid=4833,fd=27))
 LISTEN  0      128                *:5280            *:*     users:(("beam.smp",pid=4833,fd=29))
 ```
-При перезапуске главного процесса _ejabberd.service_, настройкидля этих работающих процессов применены не будут и мы получим ошибку запуска.
+При перезапуске главного процесса _ejabberd.service_, настройки для этих работающих процессов применены не будут и мы получим ошибку при попопытке создать кластер.
 Поэтому потребуется завершить все процессы _beam.smp_, что приведёт к остановке процесса _ejabberd.service_, остановить сервис _epmd_, 
 после чего запустить _ejabberd.service_. Пример соответствующей задчи для _Ansible_:
 ```
@@ -434,10 +436,12 @@ LISTEN  0      128                *:5280            *:*     users:(("beam.smp",p
         systemctl stop epmd.service
         sleep 5
         systemctl start ejabberd.service
+        sleep 5
       args:
         executable: /bin/bash
 ```
-Также, для обеспечения возможности синхронизации узлов кластера, изменим порты, используемые _Erlang_ с динамического на выделенный диапазон 4200-4210:
+Также, для обеспечения возможности синхронизации узлов кластера при работающем файерволле на хостах, изменим порты, используемые _Erlang_ 
+с динамического на выделенный диапазон 4200-4210 (не забудем добавить соответствующие разрешающие правила в iptables):
 ```
 - name: eJabberd | Group of servers "ejserver". Confgure Erlang. Pre-configuration for creating a cluster
   hosts: ejserver
@@ -465,7 +469,8 @@ LISTEN  0      128                *:5280            *:*     users:(("beam.smp",p
         executable: /bin/bash
 ```
 
-Чтобы добавление узла в кластер прошло успешно, необходимо обеспечить разрешение имён нод на DNS-службе или в файлах _hosts_ всех узлов кластера, после чего можно проверить их доступность между собой:
+Чтобы добавление узла в кластер прошло успешно, необходимо обеспечить разрешение имён нод на DNS-службе или в файлах _hosts_ всех узлов кластера, 
+после чего можно проверить их доступность между собой:
 ```
 root@e1server:~# ejabberdctl ping ejabberd@e2server
 pong
@@ -473,7 +478,8 @@ pong
 
 ##### PostgreSQL
 ###### Настройка файла _pg_hba.conf_
-Предоставим пользователю _ejabberd_ права на удалённый доступ к базе данных _ejabberd\_domain\_local_, а пользователю _replica\_role_ доступ к кластеру для потоковой репликации. Для этого нужно привести файл _pg_hba.conf_ для Master ноды к виду:
+Предоставим пользователю _ejabberd_ права на удалённый доступ к базе данных _ejabberd\_domain\_local_, а пользователю _replica\_role_ доступ к кластеру для потоковой репликации. 
+Для этого нужно привести файл _pg_hba.conf_ для _Master_ ноды к виду:
 ```
 # Database administrative login by Unix domain socket
 # TYPE  DATABASE        USER            ADDRESS                 METHOD
@@ -514,7 +520,8 @@ host    ejabberd-domain-local   ejabberd        192.168.1.3/32  scram-sha-256
 host    all     all     127.0.0.1/32    scram-sha-256
 host    all     all     ::1/128 scram-sha-256
 ```
-Задача в _Ansible playbook_ - редактирование_pg\_hba.conf_ для предоставления доступа пользователю _ejabberd_ и настройки сетевого интерфейса, на котором работает _PostgreSQL_. Выполняется на обеих нодах:
+Задача в _Ansible playbook_ - редактирование_pg\_hba.conf_ для предоставления доступа пользователю _ejabberd_ и настройки сетевого интерфейса, на котором работает _PostgreSQL_. 
+Выполняется на обеих нодах:
 ```
     - name: Edit pg_hba configuration file. Add e1server access. Открываем удалённый доступ с первой ноды Jabber-сервера к базе ejabberd-domain-local для пользователя ejabberd.
       postgresql_pg_hba:
