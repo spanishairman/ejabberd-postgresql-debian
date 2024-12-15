@@ -587,6 +587,8 @@ host    all     all     ::1/128 scram-sha-256
 > На этом же сервере - _bk1server_, в каталогах _/srv/share/upload/psql{1,2}server/{backup,archive}/_, предоставляемых для монтирования по протоколу nfs серверам psql1server и psql2server, 
 > сохраняются копии PostgreSQL-кластера соответствующих серверов, а также их журналы WAL.
 
+Основные настройки _Bacula_ относятся к демону _Director_ и хранятся в конфигурационном файле _/etc/bacula/bacula-dir.conf_. Рассмотрим их подробнее.
+
 ###### Jobs
 ```
 # My jobs and jobdefs
@@ -638,13 +640,13 @@ Job {
 }
 
 Job {
-  Name = "psql2-fs-Job"
+  Name = "psql2-dump-Job"
   FileSet = "My-psql-FS"
-  Pool = psql2-fs-Full
-  Full Backup Pool = psql2-fs-Full                  # write Full Backups into "Full" Pool         (#05)
-  Differential Backup Pool = psql2-fs-Diff
-  Incremental Backup Pool = psql2-fs-Incr           # write Incr Backups into "Incremental" Pool  (#11)
-  Schedule = "psql2-fs-Sdl"
+  Pool = psql2-dump-Full
+  Full Backup Pool = psql2-dump-Full                  # write Full Backups into "Full" Pool         (#05)
+  Differential Backup Pool = psql2-dump-Diff
+  Incremental Backup Pool = psql2-dump-Incr           # write Incr Backups into "Incremental" Pool  (#11)
+  Schedule = "psql2-dump-Sdl"
   JobDefs = "My-JobDef-Tpl"
   Client = "psql2server-fd"
   ClientRunBeforeJob = "/etc/bacula/scripts/bacula-before-dump.sh" # скрипт выполняющийся до задачи
@@ -721,7 +723,7 @@ FileSet {
   - разностная копия - 15 числа каждого месяца в час ночи;
   - инкрементные копии - со 2 по 14 и с 16 по 31 число каждого месяца в час ночи.
 
-Для машины psql2server расписания выглядят так:
+Для машины psql2server расписания для задач резервного копирования каталога _/bacula-backup_ выглядят так:
   - Полная копия - ежедневно в час ночи;
   - разностная копия - ежедневно в час дня;
   - инкрементные копии ежедневно каждый час кроме часа ночи и часа дня.
@@ -811,3 +813,158 @@ Client {
   AutoPrune = yes                     # Prune expired Jobs/Files
 }
 ```
+###### Storage
+
+Здесь настраиваются параметры, с которыми _Director_ подключается к демону _Storage_.
+```
+# My-storage
+
+Storage {
+  Name = bk1server-sd
+# Do not use "localhost" here
+  Address = 192.168.1.12                # N.B. Use a fully qualified name here
+  SDPort = 9103
+  Password = "tX-mbxkAlCKyMGRTf33pWEuzlVZRB7OaJ"
+  Device = FileStorage
+  Media Type = File
+  Maximum Concurrent Jobs = 10        # run up to 10 jobs a the same time
+}
+```
+_Storage_ может размещаться как на одном хосте с _Director_ так и на выделенном сервере или кластере серверов (что предпочтительнее).
+
+###### Pools
+
+Пулы томов содержат тома с резервными копиями, пулы предназначены для хранения различных типов томов, более гибкого управления резервными копиями и их циклической перезаписи.
+
+Для клиента _e1server_ набор пулов томов выглядит так:
+```
+# File Pool definition eJabberd1-fs
+Pool {
+  Name = e1-fs-Full
+  Pool Type = Backup
+  Recycle = yes                        # Bacula can automatically recycle Volumes
+  AutoPrune = yes                      # Prune expired volumes
+  Recycle Oldest Volume = yes          # Prune the oldest volume in the Pool, and if all files were pruned, recycle this volume and use it.
+  Volume Retention = 29  days          # How long should the Full Backups be kept?
+  Maximum Volume Bytes = 1G            # Limit Volume size to something reasonable
+  Maximum Volume Jobs = 30             # 30 Jobs = One Vol
+  Maximum Volumes = 3                  # Limit number of Volumes in Pool
+  Label Format = "e1-fs-Full-"         # Volumes will be labeled "Full-<volume-id>"
+}
+Pool {
+  Name = e1-fs-Diff
+  Pool Type = Backup
+  Recycle = yes
+  AutoPrune = yes
+  Recycle Oldest Volume = yes
+  Volume Retention = 29  days
+  Maximum Volume Bytes = 1G
+  Maximum Volume Jobs = 30
+  Maximum Volumes = 3
+  Label Format = "e1-fs-Diff-"
+}
+Pool {
+  Name = e1-fs-Incr
+  Pool Type = Backup
+  Recycle = yes
+  AutoPrune = yes
+  Recycle Oldest Volume = yes
+  Volume Retention = 7   days
+  Maximum Volume Bytes = 1G
+  Maximum Volume Jobs = 14
+  Maximum Volumes = 3
+  Label Format = "e1-fs-Incr-"
+}
+```
+Для клиента e2server - так:
+```
+# File Pool definition eJabberd2-fs
+Pool {
+  Name = e2-fs-Full
+  Pool Type = Backup
+  Recycle = yes
+  AutoPrune = yes
+  Recycle Oldest Volume = yes
+  Volume Retention = 29  days
+  Maximum Volume Bytes = 1G
+  Maximum Volume Jobs = 30
+  Maximum Volumes = 3
+  Label Format = "e2-fs-Full-"
+}
+Pool {
+  Name = e2-fs-Diff
+  Pool Type = Backup
+  Recycle = yes
+  AutoPrune = yes
+  Recycle Oldest Volume = yes
+  Volume Retention = 29  days
+  Maximum Volume Bytes = 1G
+  Maximum Volume Jobs = 30
+  Maximum Volumes = 3
+  Label Format = "e2-fs-Diff-"
+}
+Pool {
+  Name = e2-fs-Incr
+  Pool Type = Backup
+  Recycle = yes
+  AutoPrune = yes
+  Recycle Oldest Volume = yes
+  Volume Retention = 7   days
+  Maximum Volume Bytes = 1G
+  Maximum Volume Jobs = 14
+  Maximum Volumes = 3
+  Label Format = "e2-fs-Incr-"
+}
+```
+Для клиента _psql2server - так:
+```
+# File Pool definition psql2-dump
+Pool {
+  Name = psql2-dump-Full
+  Pool Type = Backup
+  Recycle = yes
+  AutoPrune = yes
+  Recycle Oldest Volume = yes
+  Volume Retention = 21  days
+  Maximum Volume Bytes = 2G
+  Maximum Volume Jobs = 7
+  Maximum Volumes = 4
+  Label Format = "psql2-dump-Full-"
+}
+Pool {
+  Name = psql2-dump-Diff
+  Pool Type = Backup
+  Recycle = yes
+  AutoPrune = yes
+  Recycle Oldest Volume = yes
+  Volume Retention = 21  days
+  Maximum Volume Bytes = 2G
+  Maximum Volume Jobs = 7
+  Maximum Volumes = 4
+  Label Format = "psql2-dump-Diff-"
+}
+Pool {
+  Name = psql2-dump-Incr
+  Pool Type = Backup
+  Recycle = yes
+  AutoPrune = yes
+  Recycle Oldest Volume = yes
+  Volume Retention = 1   days
+  Maximum Volume Bytes = 1G
+  Maximum Volume Jobs = 22
+  Maximum Volumes = 2
+  Label Format = "psql2-dump-Incr-"
+}
+```
+Подробное описание параметров для пулов томов я уже делал здесь, сейчас же опишу, как работает цикл хранения резервных копий базы данных
+_ejabberd-domain-local_ на примере вышеуказанных пулов и расписаний.
+
+Так как полная копия для базы данных _ejabberd-domain-local_ создается один раз в дель и пишется на пул _psql2-dump-Full_, то мы будем заполнять один том в течение недели. 
+Затем количество резервных копий в томе достигнет максимального значения (параметр _Maximum Volume Jobs = 7_) и следующая задача запишет новую копию в новый том. 
+И будет писать в него, пока снова не достигнет значения 7 копий. Далее, когда будут использованы все четыре тома в пуле (параметр _Maximum Volumes = 4_), _Bacula_, 
+так как свободных томов не осталась, начнёт искать использованный том, у которого истёк срок, заданный параметром _Volume Retention = 21  days_. Это будет самый первый том, а 
+так как для него задан параметр _Recycle = yes_, то данные на нём будут перезаписаны, более того, благодаря опции _AutoPrune = yes_, данный том будет усечён до нулевого размера.
+Что же произойдёт, если на момент исчерпания новых свободных томов в пуле, окажется более одного тома с истёкшим сроком хранения, заданным параметром _Volume Retention_?
+Здесь, благодаря заданной опции _Recycle Oldest Volume = yes_, будет перезаписан том, хранящий самые старые записи.
+
+Хранение резервных копий в остальных томах можно посчитать точно также, используя вышеуказанный пример.
