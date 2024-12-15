@@ -715,6 +715,48 @@ FileSet {
 
 ```
 
+###### Schedules
+Зададим расписания для выполнения задаий резервного копирования каталога _/etc_ клиентских машин _e1server_ и _e2server_:
+  - Полная копия - 1 число каждого месяца в час ночи;
+  - разностная копия - 15 числа каждого месяца в час ночи;
+  - инкрементные копии - со 2 по 14 и с 16 по 31 число каждого месяца в час ночи.
+Для машины psql2server расписания выглядят так:
+  - Полная копия - ежедневно в час ночи;
+  - разностная копия - ежедневно в час дня;
+  - инкрементные копии ежедневно каждый час кроме часа ночи и часа дня.
+В соответствующем блоке настроек - _Schedules_ расписания выглядят так:
+```
+# My Schedules
+
+Schedule {
+  Enabled = yes
+  Name = "e1-fs-Sdl"
+  Run = Level=Full on 1 at 01:00
+  Run = Level=Differential on 15 at 01:00
+  Run = Level=Incremental on 2-14 at 01:00
+  Run = Level=Incremental on 16-31 at 01:00
+}
+
+Schedule {
+  Enabled = yes
+  Name = "e2-fs-Sdl"
+  Run = Level=Full Pool=e2-fs-Full on 1 at 01:00
+  Run = Level=Differential on 15 at 01:00
+  Run = Level=Incremental on 2-14 at 01:00
+  Run = Level=Incremental on 16-31 at 01:00
+}
+
+Schedule {
+  Enabled = yes
+  Name = "psql2-dump-Sdl"
+  Run = Level=Full Pool=psql2-dump-Full at 01:00
+  Run = Level=Differential at 13:00
+  Run = Level=Incremental 2-12
+  Run = Level=Incremental 14-23
+  Run = Level=Incremental at 00:00
+}
+```
+
 ###### Clients
 Описание клиентов сервера  в конфигурационном файле  _/etc/bacula/bacula-dir.conf_:
 ```
