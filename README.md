@@ -229,7 +229,7 @@ psql -d ejabberd-domain-local -f /usr/share/ejabberd/sql/pg.sql
       community.postgresql.postgresql_user:
         db: ejabberd-domain-local
         name: ejabberd
-        password: Inc0gn1t0
+        password: P@ssw0rd
         expires: "infinity"
     - name: Connect to eJabberd database, grant privileges on "ejabberd-domain-local" database objects (database) for "ejabberd" role.
       community.postgresql.postgresql_privs:
@@ -257,7 +257,7 @@ psql -d ejabberd-domain-local -f /usr/share/ejabberd/sql/pg.sql
         login_host: 192.168.1.10
         db: ejabberd-domain-local
         login_user: ejabberd
-        login_password: Inc0gn1t0
+        login_password: P@ssw0rd
         path_to_script: /usr/share/ejabberd/sql/pg.sql
 ```
 > [!NOTE]
@@ -295,7 +295,7 @@ host_config:
         echo '    sql_server: 192.168.1.10' >> ejabberd.yml
         echo '    sql_database: ejabberd-domain-local' >> ejabberd.yml
         echo '    sql_username: ejabberd' >> ejabberd.yml
-        echo '    sql_password: Inc0gn1t0' >> ejabberd.yml
+        echo '    sql_password: P@ssw0rd' >> ejabberd.yml
         echo '    auth_method:' >> ejabberd.yml
         echo '      - sql' >> ejabberd.yml
       args:
@@ -312,7 +312,7 @@ host_config:
   tasks:
     - name: Add users. Edit ejabberd.yml
       ansible.builtin.shell: |
-        ejabberdctl register admin domain.local Inc0gn1t0
+        ejabberdctl register admin domain.local P@ssw0rd
         ejabberdctl register max domain.local P@$$w0rd
       args:
         executable: /bin/bash
@@ -576,6 +576,26 @@ host    all     all     ::1/128 scram-sha-256
         source: 192.168.1.10
         databases: replication
         method: scram-sha-256
+```
+
+###### Настройка потоковой репликации
+Для запуска сервера _psql2server_ в режиме _Replica_ служит следующая задача в _Ansible Playbook_ (выполняется на сервера psql2server_):
+```
+- name: PostgreSQL | Secondary Server. Configuration a Replica server and start replication.
+  hosts: psql2server
+  become: true
+  tasks:
+    - name: Config. Bash. Stop postgresql service, remove work directory. Set PGPASSWORD variable, start replication.
+      ansible.builtin.shell: |
+        systemctl stop postgresql
+        rm -rf /var/lib/postgresql/15/main
+        PGPASSWORD=P@ssw0rd
+        export PGPASSWORD
+        pg_basebackup -h 192.168.1.10 -U replica_role -X stream -R -P -D /var/lib/postgresql/15/main
+        chown -R postgres: /var/lib/postgresql/15/main
+        systemctl start postgresql
+      args:
+        executable: /bin/bash
 ```
 ##### Bacula
 В качестве системы резервного копирования для долговременного хранения копий баз данных и конфигураций приложений будем использовать [Bacula](https://www.bacula.org/)
