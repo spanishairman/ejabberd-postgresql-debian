@@ -965,8 +965,7 @@ _ejabberd-domain-local_ на примере вышеуказанных пуло�
 > [!NOTE]
 > Под единицей измерения в данном случае подразумевается _Задача_ (***Job***), независимо от того, сколько резервных копий файлов она создаёт.
 
-Следующая задача запишет новую копию в новый том, 
-и будет писать в него, пока снова не достигнет значения 7 копий. 
+Следующая задача запишет новую копию в новый том, и далее задачи резервного копирования будут писать в него, пока количество задач снова не достигнет значения 7. 
 
 Далее, когда будут использованы все четыре тома в пуле (параметр ***Maximum Volumes = 4***), _Bacula_, так как свободных томов не осталась, начнёт искать использованный том, 
 у которого истёк срок хранения, заданный параметром ***Volume Retention = 21  days*** (отсчитывается от времени последней записи в том). 
@@ -978,3 +977,56 @@ _ejabberd-domain-local_ на примере вышеуказанных пуло�
 Здесь, благодаря заданной опции ***Recycle Oldest Volume = yes***, будет перезаписан том, хранящий самые старые записи.
 
 Хранение резервных копий в остальных томах можно посчитать точно также, используя вышеуказанный пример.
+
+##### Nfs
+На сервере bk1server также экспортируются каталоги для хранения резервных копий _PostgreSQL кластеров_ и их журналов WAL. Установка и настройка сервера NFS осуществляется в следующем _Ansible Playbook_:
+```
+- name: bacula | Install and configure nfs and bacula-server. Установка nfs and bacula на группу серверов bkserver. Настройка конфигурационных файлов.
+  hosts: bkserver
+  become: true
+  tasks:
+    - name: Install packages "bacula" and "nfs" to latest version
+      ansible.builtin.apt:
+        name: nfs-common,nfs-kernel-server,bacula
+        state: present
+        update_cache: true
+    - name: Configure and start nfs-server and bacula-dir, bacula-sd, bacula-catalog
+      ansible.builtin.shell: |
+        mkdir -p /srv/share/upload/psql{1,2}server/{archive,backup}
+        chmod -R o+w /srv/share/upload
+        echo '/srv/share/upload 192.168.1.10/32(rw,sync,root_squash,no_subtree_check)' >> /etc/exports
+        echo '/srv/share/upload 192.168.1.11/32(rw,sync,root_squash,no_subtree_check)' >> /etc/exports
+        exportfs -r
+```
+В данном случае мы разрешили хостам с ip-адресами _192.168.1.10_ и _192.168.1.11_ монтировать каталог _/srv/share/upload_ в режиме записи и с трансляцией UID удалённого прользователя _root_ в _nobody_.
+
+На клиентской стороне монтирование каталогов _NFS-сервера_ происходит благодаря записи в _Playbook_ для _Primary_:
+```
+- name: PostgreSQL | Primary Server. Creating a directory for archiving. Settngs for replication and archiving
+  hosts: psql1server
+  become: true
+  tasks:
+    - name: Bash. Create a directory for nfs-mounting and archiving
+      ansible.builtin.shell: |
+        test ! -d /mnt/nfs && mkdir -p $_
+        echo "192.168.1.12:/srv/share/upload/ /mnt/nfs nfs vers=3,noauto,x-systemd.automount 0 0" >> /etc/fstab
+        systemctl daemon-reload
+        systemctl restart remote-fs.target
+      args:
+        executable: /bin/bash
+```
+И для _Replica_:
+```
+- name: PostgreSQL | Secondary Server. Configuration a Replica server and start replication.
+  hosts: psql2server
+  become: true
+  tasks:
+    - name: Bash. Create nfs dir. Configure bacula-client
+      ansible.builtin.shell: |
+        test ! -d /mnt/nfs && mkdir -p $_
+        echo "192.168.1.12:/srv/share/upload/ /mnt/nfs nfs vers=3,noauto,x-systemd.automount 0 0" >> /etc/fstab
+        systemctl daemon-reload
+        systemctl restart remote-fs.target
+      args:
+        executable: /bin/bash
+```
