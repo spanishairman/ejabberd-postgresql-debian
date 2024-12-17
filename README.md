@@ -121,7 +121,7 @@ e1server.vm.provision "shell", inline: <<-SHELL
 ###### Установка
 Установка _Ejabberd_ производится из репозиториев "bookworm-backports". Для этого создаём следующую задачу:
 ```
-- name: eJabberd | Group of servers "ejserver". Install and configure ejabberd. Installing "ejabberd" and "bacula-client" packages on the "ejserver" server group
+- name: eJabberd | Group of servers "ejserver". Install and configure ejabberd. Installing "ejabberd" packages on the "ejserver" server group
   hosts: ejserver
   become: true
   tasks:
@@ -129,21 +129,14 @@ e1server.vm.provision "shell", inline: <<-SHELL
       ansible.builtin.apt_repository:
         repo: deb http://deb.debian.org/debian bookworm-backports main contrib non-free
         state: present
-    - name: APT. Update the repository cache and install packages "eJabberd", "erlang-p1-pgsql", "python3-psycopg2", "acl", "bacula-client" to latest version using default release bookworm-b>
+    - name: APT. Update the repository cache and install packages "eJabberd", "erlang-p1-pgsql", "python3-psycopg2", "acl" to latest version using default release bookworm-backport
       ansible.builtin.apt:
-        name: ejabberd,erlang-p1-pgsql,python3-psycopg2,acl,bacula-client
+        name: ejabberd,erlang-p1-pgsql,python3-psycopg2,acl
         state: present
         default_release: bookworm-backports
         update_cache: yes
-    - name: Bacula-client. Copy configuration file. Restart of service
-      ansible.builtin.shell: |
-        cp /home/vagrant/bacula-fd.conf /etc/bacula/
-        systemctl restart bacula-fd.service
-      args:
-        executable: /bin/bash
 ```
 В которой мы добавили новый репозиторий и установили необходимое ПО, указав в качестве источника "bookworm-backports". 
-Помимо __Ejabberd__ в ней также ставится клиент системы резервного копирования - __Bacula__.
 
 ###### Общие настройки
 Изменим домен по умолчанию, который обслуживает наш сервер. Это параметр _hosts_ в конфигурационном файле /etc/ejabberd/ejabberd.yml:
@@ -174,10 +167,6 @@ Ansible playbook:
 <a name="admin-rights-point"></a>
 Зададим права админа для домена _domain.local_. Ansible playbook: 
 ```
-- name: eJabberd | Group of servers "ejserver". Confgure ejservers for domainname and psql1server connect. Granting administrator account rights
-  hosts: ejserver
-  become: true
-  tasks:
     - name: Edit ejabberd.yml for granting administrator account rights.
       ansible.builtin.shell: |
         echo ''  >> ejabberd.yml
@@ -425,7 +414,7 @@ LISTEN  0      128                *:5222            *:*     users:(("beam.smp",p
 LISTEN  0      128                *:5269            *:*     users:(("beam.smp",pid=4833,fd=27))
 LISTEN  0      128                *:5280            *:*     users:(("beam.smp",pid=4833,fd=29))
 ```
-При перезапуске главного процесса _ejabberd.service_, настройки для этих работающих процессов применены не будут и мы получим ошибку при попопытке создать кластер.
+При перезапуске главного процесса _ejabberd.service_, настройки для этих работающих процессов применены не будут и мы получим ошибку при попытке создать кластер.
 Поэтому потребуется завершить все процессы _beam.smp_, что приведёт к остановке процесса _ejabberd.service_, остановить сервис _epmd_, 
 после чего запустить _ejabberd.service_. Пример соответствующей задчи для _Ansible_:
 ```
@@ -600,8 +589,8 @@ host    all     all     ::1/128 scram-sha-256
 ##### Bacula
 В качестве системы резервного копирования для долговременного хранения копий баз данных и конфигураций приложений будем использовать [Bacula](https://www.bacula.org/)
 
-На сервере резервных копий будут храниться копии каталогов _/etc_ серверов _e1server_и _e2server_, 
-а также резервные копии базы _ejabberd-domain-local_, снятые с сервера psql2server (Replica)
+На сервере резервных копий будут храниться копии каталогов _/etc_ серверов _e1server_и _e2server_, резервные копии базы _ejabberd-domain-local_, снятые с сервера psql2server (Replica),
+а также архивы рабочего каталога Grafana сервера mon1server.
 
 > [!NOTE]
 > На этом же сервере - _bk1server_, в каталогах _/srv/share/upload/psql{1,2}server/{backup,archive}/_, предоставляемых для монтирования по протоколу nfs серверам psql1server и psql2server, 
@@ -673,6 +662,18 @@ Job {
   ClientRunAfterJob = "/etc/bacula/scripts/bacula-after-dump.sh" # скрипт выполняющийся после задачи
 }
 
+Job {
+  Name = "mon1-grfn-Job"
+  FileSet = "My-grfn-FS"
+  Pool = mon1-grfn-Full
+  Full Backup Pool = mon1-grfn-Full                  # write Full Backups into "Full" Pool         (#05)
+  Differential Backup Pool = mon1-grfn-Diff
+  Incremental Backup Pool = mon1-grfn-Incr           # write Incr Backups into "Incremental" Pool  (#11)
+  Schedule = "mon1-grfn-Sdl"
+  JobDefs = "My-JobDef-Tpl"
+  Client = "mon1server-fd"
+}
+
 ```
 В данном блоке описан шаблон для задач - _My-JobDef-Tpl_, в котором собраны общие для нескольких задач параметры, задача для восстановления - _MyRestoreFiles_ и остальные задачи, 
 которые описывают параметры резервного копирования для разных наборов файлов, пулов томов, расписаний и пр. 
@@ -680,15 +681,15 @@ Job {
 
 ###### Filesets
 
-Наборы архивируемых файлов описываются в соответствующем блоке настроек. Здесь у нас набор _My-fs-FS_, котрый содержит каталог _/etc_ и _My-psql-FS_ - в этом наборе 
-содержится описание каталога /bacula-backup/. 
+Наборы архивируемых файлов описываются в соответствующем блоке настроек. Здесь у нас набор _My-fs-FS_, который содержит каталог _/etc_, _My-psql-FS_ - в этом наборе 
+содержится описание каталога /bacula-backup/ и_My-grfn-FS_ содержит _/var/lib/grafana_ - рабочий каталог Grafana. 
 
 > [!NOTE]
 > В каталог _/bacula-backup/_ попадает резервная копия базы данных _ejabberd-domain-local_, которая создаётся с помощью скрипта _/etc/bacula/scripts/bacula-before-dump.sh_, 
 > запускаемого непосредственно перед выполнением задачи резервного копирования. Таким образом, сначала выполняется скрипт, создающий дамп базы данных в каталоге /bacula-backup/,
 > затем содержимое этого каталога архивируется на сервер резервных копий
 
-Содержимое скрипта _/etc/bacula/scripts/bacula-before-dump.sh_:
+Содержимое скрипта _/etc/bacula/scripts/bacula-before-dump.sh_ для сервера _psql2server_:
 ```
 #!/bin/bash
 # Пример pg_dump со сжатием:
@@ -735,6 +736,22 @@ FileSet {
   }
 }
 
+FileSet {
+  Name = "My-grfn-FS"
+  Enable VSS = yes
+  Include {
+    Options {
+      Signature = SHA1
+      Compression = LZO
+      No Atime = yes
+      Sparse = yes
+      Checkfilechanges = yes
+      IgnoreCase = no
+    }
+    File = "/var/lib/grafana"
+  }
+}
+
 ```
 
 ###### Schedules
@@ -743,8 +760,13 @@ FileSet {
   - разностная копия - 15 числа каждого месяца в час ночи;
   - инкрементные копии - со 2 по 14 и с 16 по 31 число каждого месяца в час ночи.
 
-Для машины psql2server расписания для задач резервного копирования каталога _/bacula-backup_ выглядят так:
+Для машины _psql2server_ расписания для задач резервного копирования каталога _/bacula-backup_ выглядят так:
   - Полная копия - ежедневно в час ночи;
+  - разностная копия - ежедневно в час дня;
+  - инкрементные копии ежедневно каждый час кроме часа ночи и часа дня.
+
+Для сервера мониторинга _mon1server_, также как и для _Replica_ сервера с базами данных:
+  - Полная копия - ежедневно в час ночи; 
   - разностная копия - ежедневно в час дня;
   - инкрементные копии ежедневно каждый час кроме часа ночи и часа дня.
 
@@ -775,6 +797,16 @@ Schedule {
   Enabled = yes
   Name = "psql2-dump-Sdl"
   Run = Level=Full Pool=psql2-dump-Full at 01:00
+  Run = Level=Differential at 13:00
+  Run = Level=Incremental 2-12
+  Run = Level=Incremental 14-23
+  Run = Level=Incremental at 00:00
+}
+
+Schedule {
+  Enabled = yes
+  Name = "mon1-grfn-Sdl"
+  Run = Level=Full Pool=mon1-grfn-Full at 01:00
   Run = Level=Differential at 13:00
   Run = Level=Incremental 2-12
   Run = Level=Incremental 14-23
@@ -828,6 +860,18 @@ Client {
   FDPort = 9102
   Catalog = MyCatalog
   Password = "XoPVaXygpP3EuWKypKqvLXKJAEr7haMTrK"          # password for FileDaemon
+  File Retention = 365 days           # 60 days
+  Job Retention = 12 months           # six months
+  AutoPrune = yes                     # Prune expired Jobs/Files
+}
+
+# Client (File Services) to backup
+Client {
+  Name = mon1server-fd
+  Address = 192.168.1.13
+  FDPort = 9102
+  Catalog = MyCatalog
+  Password = "HPihbJqsYFXHcU7MNdaTNkEjxfhReUWgpW"          # password for FileDaemon
   File Retention = 365 days           # 60 days
   Job Retention = 12 months           # six months
   AutoPrune = yes                     # Prune expired Jobs/Files
@@ -974,6 +1018,46 @@ Pool {
   Maximum Volume Jobs = 22
   Maximum Volumes = 2
   Label Format = "psql2-dump-Incr-"
+}
+```
+Для _mon1server_:
+```
+# File Pool definition mon1-fs
+Pool {
+  Name = mon1-grfn-Full
+  Pool Type = Backup
+  Recycle = yes
+  AutoPrune = yes
+  Recycle Oldest Volume = yes
+  Volume Retention = 21  days
+  Maximum Volume Bytes = 2G
+  Maximum Volume Jobs = 7
+  Maximum Volumes = 4
+  Label Format = "mon1-grfn-Full-"
+}
+Pool {
+  Name = mon1-grfn-Diff
+  Pool Type = Backup
+  Recycle = yes
+  AutoPrune = yes
+  Recycle Oldest Volume = yes
+  Volume Retention = 21  days
+  Maximum Volume Bytes = 2G
+  Maximum Volume Jobs = 7
+  Maximum Volumes = 4
+  Label Format = "mon1-grfn-Diff-"
+}
+Pool {
+  Name = mon1-grfn-Incr
+  Pool Type = Backup
+  Recycle = yes
+  AutoPrune = yes
+  Recycle Oldest Volume = yes
+  Volume Retention = 1   days
+  Maximum Volume Bytes = 1G
+  Maximum Volume Jobs = 22
+  Maximum Volumes = 2
+  Label Format = "mon1-grfn-Incr-"
 }
 ```
 Подробное описание параметров для пулов томов я уже делал [здесь](https://github.com/spanishairman/bacula-debian), сейчас же опишу, как работает цикл хранения резервных копий базы данных
