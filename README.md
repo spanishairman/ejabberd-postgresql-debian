@@ -1364,3 +1364,56 @@ bkserver
 С помощью [Grafana](https://grafana.com/grafana/) можно выводить на монитор наглядные результаты сбора метрик со стороны _Prometheus_. Пример вывода информации в _Grafana_:
 
 ![Grafana](/pictures/grafana.png)
+
+На [странице](https://grafana.com/docs/grafana/latest/setup-grafana/installation/debian/) руководства по установке _Grafana_ на операционные системы _Debian_ или _Ubuntu_ предлагается два пути:
+  - импортировать GPG-ключ и добавить репозиторий _Grafana_;
+  - скачать установочный пакет со [страницы](https://grafana.com/grafana/download) загрузки и установить его локально.
+
+Воспользуемся вторым способом. _Ansible Playbook_ для установки и настройки _Grafana_:
+
+```
+---
+- name: Grafana | Install Grafana
+  hosts: monserver
+  become: true
+  tasks:
+    - name: Grafana. Install. Enable and start of service
+      ansible.builtin.shell: |
+        dpkg -i grafana_11.4.0_amd64.deb
+        systemctl daemon-reload
+        systemctl enable grafana-server
+        systemctl start grafana-server
+      args:
+        executable: /bin/bash
+        chdir: /home/vagrant/
+- name: Grafana | Configure Grafana
+  hosts: monserver
+  become: true
+  tasks:
+    - name: Grafana. Configure. Enable and start of service
+      ansible.builtin.shell: |
+        cp /home/vagrant/mon1server.pem /etc/grafana/mon1server.pem
+        chown grafana:grafana /etc/grafana/mon1server.pem
+        sed -i "s/;protocol = http/protocol = https/" /etc/grafana/grafana.ini
+        sed -i "s/;domain = localhost/domain = grafana.domain.local/" /etc/grafana/grafana.ini
+        sed -i "s/;cert_file =/cert_file = \\/etc\\/grafana\\/mon1server.pem/" /etc/grafana/grafana.ini
+        sed -i "s/;cert_key =/cert_key = \\/etc\\/grafana\\/mon1server.pem/" /etc/grafana/grafana.ini
+        systemctl restart grafana-server.service
+      args:
+        executable: /bin/bash
+```
+
+Проверим, что _Grafana_ запустилась:
+
+```
+root@mon1server:~# ss -ntlp
+State    Recv-Q  Send-Q  Local Address:Port  Peer Address:Port  Process                                                         
+LISTEN   0       128           0.0.0.0:22         0.0.0.0:*      users:(("sshd",pid=506,fd=3))                                  
+LISTEN   0       50       192.168.1.13:9102       0.0.0.0:*      users:(("bacula-fd",pid=2420,fd=3))                            
+LISTEN   0       4096                *:3000             *:*      users:(("grafana",pid=5687,fd=10))                             
+LISTEN   0       4096                *:9090             *:*      users:(("prometheus",pid=5342,fd=7))                           
+LISTEN   0       4096                *:9100             *:*      users:(("prometheus-node",pid=4789,fd=3))                      
+LISTEN   0       128              [::]:22            [::]:*      users:(("sshd",pid=506,fd=4))
+```
+
+Дальнейшие шаги по настройке и добавлению панелей производятся уже в веб-интерфейсе установленного сервиса, доступном по адресу https://имя_хоста:3000
