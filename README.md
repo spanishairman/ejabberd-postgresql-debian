@@ -794,6 +794,7 @@ FileSet {
       IgnoreCase = no
     }
     File = "/var/lib/grafana"
+    File = "/var/lib/prometheus"
   }
 }
 
@@ -1310,4 +1311,51 @@ Ansible Playbook для разворачивания _Prometheus_ на клие�
       args:
         executable: /bin/bash
         chdir: /etc/prometheus/
+```
+
+В нашем примере мы установили сервер ***Prometheus*** на виртуальную машину _mon1server_, а экспортеры ***prometheus-node-exporter*** на следующие машины: 
+  - _e1server_, 
+  - _e2server_,
+  - _psql1server_, 
+  - _psql2server_,
+  - _gw1server_, 
+  - _bk1server_.
+
+> [!NOTE]
+> Обратите внимание, что для добавления указанных машин в качестве целевых, в задаче ***"APT. Update the repository cache and install packages "prometheus-node-exporter" to latest version"***
+> используется группа хостов с именем ***prometheuses***, которая, в свою очередь, содержит вложенные группы хостов - _ejserver_, _psqlserver_, _gwserver_ и _bkserver_. 
+> Для описания группы хостов, содержащих вложенные группы, необходимо через двоеточие после имени группы указывать ключ _children_. В нашем случае файл инвентаризации хостов выглядит так:
+
+```
+[ejserver]
+e1server ansible_host=192.168.121.10 ansible_port=22 ansible_private_key_file=/home/max/vagrant/vg3/.vagrant/machines/Debian12-eJabberd1/libvirt/private_key
+e2server ansible_host=192.168.121.11 ansible_port=22 ansible_private_key_file=/home/max/vagrant/vg3/.vagrant/machines/Debian12-eJabberd2/libvirt/private_key
+
+[psqlserver]
+psql1server ansible_host=192.168.121.12 ansible_port=22 ansible_private_key_file=/home/max/vagrant/vg3/.vagrant/machines/Debian12-psql1/libvirt/private_key
+psql2server ansible_host=192.168.121.13 ansible_port=22 ansible_private_key_file=/home/max/vagrant/vg3/.vagrant/machines/Debian12-psql2/libvirt/private_key
+
+[gwserver]
+gw1server ansible_host=192.168.121.14 ansible_port=22 ansible_private_key_file=/home/max/vagrant/vg3/.vagrant/machines/Debian12-gw1/libvirt/private_key
+
+[bkserver]
+bk1server ansible_host=192.168.121.15 ansible_port=22 ansible_private_key_file=/home/max/vagrant/vg3/.vagrant/machines/Debian12-bk1/libvirt/private_key
+
+[monserver]
+mon1server ansible_host=192.168.121.16 ansible_port=22 ansible_private_key_file=/home/max/vagrant/vg3/.vagrant/machines/Debian12-mon1/libvirt/private_key
+
+[baculas:children]
+ejserver
+psqlserver
+monserver
+
+[baculas-script]
+psql2server ansible_host=192.168.121.13 ansible_port=22 ansible_private_key_file=/home/max/vagrant/vg3/.vagrant/machines/Debian12-psql2/libvirt/private_key
+mon1server ansible_host=192.168.121.16 ansible_port=22 ansible_private_key_file=/home/max/vagrant/vg3/.vagrant/machines/Debian12-mon1/libvirt/private_key
+
+[prometheuses:children]
+ejserver
+psqlserver
+gwserver
+bkserver
 ```
