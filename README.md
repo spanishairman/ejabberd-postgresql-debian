@@ -3,7 +3,8 @@
 #### Автоматическое развёртывание в виртуальной среде с использованием Vagrant, Libvirt, QEMU, KVM и Ansible службы обмена мгновенными сообщениями на базе XMPP-сервера [Ejabberd](https://docs.ejabberd.im/)
 
 > [!NOTE]
-> [Ejabberd](https://docs.ejabberd.im/) — это надежная, масштабируемая и расширяемая платформа реального времени с открытым исходным кодом, созданная с использованием Erlang/OTP, которая включает в себя сервер XMPP, брокер MQTT ислужбу SIP.
+> [Ejabberd](https://docs.ejabberd.im/) — это надежная, масштабируемая и расширяемая платформа реального времени с открытым исходным кодом, созданная с использованием Erlang/OTP, 
+> которая включает в себя сервер [XMPP](https://xmpp.org/), брокер [MQTT](https://mqtt.org/) ислужбу [SIP](https://en.wikipedia.org/wiki/Session_Initiation_Protocol).
 
 ##### Описание стенда
 Для работы будем использовать виртуальный стенд, построенный с использованием среды разработки [Vagrant](https://www.vagrantup.com/), инструментов управления виртуализацией [Libvirt](https://libvirt.org/), 
@@ -1133,4 +1134,115 @@ _ejabberd-domain-local_ на примере вышеуказанных пуло�
         systemctl restart remote-fs.target
       args:
         executable: /bin/bash
+```
+
+##### Prometheus
+Для сбора метрик с узлов сети будем ипользовать [Prometheus]() - набор инструментов с открытым исходным кодом для мониторинга и оповещения.
+_Prometheus_ состоит из двух компонентов: сервера и экспортера. Сервер собирает метрики из целей и хранит их в собственной базе данных _"/var/lib/prometheus/metrics2"_.
+Экспортер предоставляет метрики клиенту, например, _Grafana_ и т. д. Поскольку _prometheus_ находится в репозитории _Debian_, установить его просто с помощью команды:
+```
+# apt install prometheus prometheus-node-exporter
+```
+Ansible Playbook для разворачивания _Prometheus_ на клиентах и сервере:
+```
+---
+- name: Prometheus-node-exporter | Install prometheus-node-exporter
+  hosts: prometheuses
+  become: true
+  tasks:
+    - name: APT. Update the repository cache and install packages "prometheus-node-exporter" to latest version
+      ansible.builtin.apt:  
+        name: prometheus-node-exporter
+        state: present
+        update_cache: yes
+- name: Prometheus-postgres-exporter | Install and copy files
+  hosts: psqlserver
+  become: true
+  tasks:
+    - name: APT. Update the repository cache and install packages "prometheus-postgres-exporter" to latest version
+      ansible.builtin.apt:  
+        name: prometheus-postgres-exporter
+        state: present
+        update_cache: yes
+    - name: prometheus-postgres-exporter. Copy configuration file
+      ansible.builtin.shell: |
+        cp prometheus-post.sql /usr/share/doc/prometheus-postgres-exporter/prometheus-post.sql
+        cp prometheus-postgres-exporter /etc/default/prometheus-postgres-exporter
+      args:
+        executable: /bin/bash
+        chdir: /home/vagrant/
+
+- name: Prometheus-postgres-exporter | Execute SQL commands to create the user prometheus and GRANTs
+  hosts: psql1server
+  become: true
+  become_user: postgres
+  tasks:
+    - name: Prometheus-postgres-exporter. Run script.
+      postgresql_query:
+        db: postgres
+        path_to_script: /usr/share/doc/prometheus-postgres-exporter/prometheus-post.sql
+
+- name: Prometheus-postgres-exporter | Restart Service
+  hosts: psqlserver
+  become: true
+  tasks:
+    - name: prometheus-postgres-exporter. Restart service
+      ansible.builtin.shell: |
+        sleep 5
+        systemctl restart prometheus-postgres-exporter.service
+      args:
+        executable: /bin/bash
+- name: Prometheus | mon1server. Install Prometheus. Add jobs for prometheus-postgres-exporter
+  hosts: monserver
+  become: true
+  tasks:
+    - name: APT. Add Backports repository into sources list
+      ansible.builtin.apt_repository:
+        repo: deb http://deb.debian.org/debian bookworm-backports main contrib non-free
+        state: present
+    - name: APT. Update the repository cache and install packages "prometheus", "adduser", "libfontconfig1", "musl" to latest version using default release bookworm-backport
+      ansible.builtin.apt:  
+        name: prometheus,adduser,libfontconfig1,musl
+        state: present
+        default_release: bookworm-backports
+        update_cache: yes
+    - name: Prometheus. Add Jobs to prometheus.yml
+      ansible.builtin.shell: |
+        echo '' >> prometheus.yml
+        echo '  - job_name: psql1server' >> prometheus.yml
+        echo '    static_configs:' >> prometheus.yml
+        echo '      - targets: ['192.168.1.10:9187']' >> prometheus.yml
+        echo '' >> prometheus.yml
+        echo '  - job_name: psql2server' >> prometheus.yml
+        echo '    static_configs:' >> prometheus.yml
+        echo '      - targets: ['192.168.1.11:9187']' >> prometheus.yml
+        echo '' >> prometheus.yml
+        echo '  - job_name: psql1serverex' >> prometheus.yml
+        echo '    static_configs:' >> prometheus.yml
+        echo '      - targets: ['192.168.1.10:9100']' >> prometheus.yml
+        echo '' >> prometheus.yml
+        echo '  - job_name: psql2serverex' >> prometheus.yml
+        echo '    static_configs:' >> prometheus.yml
+        echo '      - targets: ['192.168.1.11:9100']' >> prometheus.yml
+        echo '' >> prometheus.yml
+        echo '  - job_name: e1serverex' >> prometheus.yml
+        echo '    static_configs:' >> prometheus.yml
+        echo '      - targets: ['192.168.1.2:9100']' >> prometheus.yml
+        echo '' >> prometheus.yml
+        echo '  - job_name: e2serverex' >> prometheus.yml
+        echo '    static_configs:' >> prometheus.yml
+        echo '      - targets: ['192.168.1.3:9100']' >> prometheus.yml
+        echo '' >> prometheus.yml
+        echo '  - job_name: gw1serverex' >> prometheus.yml
+        echo '    static_configs:' >> prometheus.yml
+        echo '      - targets: ['192.168.1.9:9100']' >> prometheus.yml
+        echo '' >> prometheus.yml
+        echo '  - job_name: bk1serverex' >> prometheus.yml
+        echo '    static_configs:' >> prometheus.yml
+        echo '      - targets: ['192.168.1.12:9100']' >> prometheus.yml
+        echo '' >> prometheus.yml
+        systemctl restart prometheus.service
+      args:
+        executable: /bin/bash
+        chdir: /etc/prometheus/
 ```
