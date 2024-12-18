@@ -632,7 +632,7 @@ host    all     all     ::1/128 scram-sha-256
 В качестве системы резервного копирования для долговременного хранения копий баз данных и конфигураций приложений будем использовать [Bacula](https://www.bacula.org/)
 
 На сервере резервных копий будут храниться копии каталогов _/etc_ серверов _e1server_и _e2server_, резервные копии базы _ejabberd-domain-local_, снятые с сервера psql2server (Replica),
-а также архивы рабочего каталога Grafana сервера mon1server.
+а также архивы рабочих каталогов _Grafana_ и _Prometheus_ сервера mon1server.
 
 > [!NOTE]
 > На этом же сервере - _bk1server_, в каталогах _/srv/share/upload/psql{1,2}server/{backup,archive}/_, предоставляемых для монтирования по протоколу nfs серверам psql1server и psql2server, 
