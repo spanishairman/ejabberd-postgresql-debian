@@ -1359,3 +1359,8 @@ psqlserver
 gwserver
 bkserver
 ```
+##### Grafana
+
+С помощью [Grafana](https://grafana.com/grafana/) можно выводить на монитор наглядные результаты сбора метрик со стороны _Prometheus_. Пример вывода информации в _Grafana_:
+
+[!Grafana](/pictures/grafana.png)
