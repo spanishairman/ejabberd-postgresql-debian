@@ -215,7 +215,9 @@ GRANT ALL ON DATABASE "ejabberd-domain-local" TO ejabberd;
 psql -d ejabberd-domain-local -f /usr/share/ejabberd/sql/pg.sql
 ```
 
-Эти шаги, выполняемые в _Ansible_, в yml-файле будут выглядеть так - создание базы и пользователя:
+Эти шаги, выполняемые в _Ansible_, в yml-файле будут выглядеть так:
+
+  - создание базы и пользователя:
 
 ```
 - name: PostgreSQL | Primary Server. Create database "ejabberd_domain_local" and role "ejabberd" on the Primary.
@@ -252,7 +254,7 @@ psql -d ejabberd-domain-local -f /usr/share/ejabberd/sql/pg.sql
         roles: ejabberd
 ```
 
-Создание структуры БД:
+  - создание структуры БД:
 
 ```
 - name: PostgreSQL | Creating tables in the database "ejabberd-domain-local" on the Master. Remote connection
@@ -726,7 +728,7 @@ Job {
 ###### Filesets
 
 Наборы архивируемых файлов описываются в соответствующем блоке настроек. Здесь у нас набор _My-fs-FS_, который содержит каталог _/etc_, _My-psql-FS_ - в этом наборе 
-содержится описание каталога /bacula-backup/ и_My-grfn-FS_ содержит _/var/lib/grafana_ - рабочий каталог Grafana. 
+содержится описание каталога /bacula-backup/ и_My-grfn-FS_ содержит _/var/lib/grafana_ - рабочий каталог _Grafana_ и _/var/lib/prometheus_ - рабочий каталог _Prometheus_. 
 
 > [!NOTE]
 > В каталог _/bacula-backup/_ попадает резервная копия базы данных _ejabberd-domain-local_, которая создаётся с помощью скрипта _/etc/bacula/scripts/bacula-before-dump.sh_, 
