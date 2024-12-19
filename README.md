@@ -317,7 +317,7 @@ host_config:
 ```
 
 ###### Управление пользователями
-[Ранее](#admin-rights-point) мы уже назначили администратора для домена ***domain.loca***. Теперь заведём соответствующую учётную запись, а вместе с ней и обычного пользователя.
+[Ранее](#admin-rights-point) мы уже назначили администратора для домена ***domain.local***. Теперь заведём соответствующую учётную запись, а вместе с ней и обычного пользователя.
 
 ```
 - name: eJabberd | e1server. Create users - administrator and regular. Configuring the e1server server certificate
