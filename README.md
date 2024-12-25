@@ -1789,3 +1789,15 @@ LISTEN   0       128              [::]:22            [::]:*      users:(("sshd",
 
 Здесь указывается такой же _virtual\_router\_id_, как на остальных хостах и устанавливается самый низкий приоритет ноды - *99*. 
 У _e1server_ и _e2server_ - *101* и *100*, соответственно.
+
+Перезапускаем _keepalived_ с новыми параметрами:
+```
+- name: Keepalived | Перезапуск Keepalived
+  hosts: r1server
+  become: true
+  tasks:
+    - name: Перезапуск Keepalived
+      ansible.builtin.shell: systemctl restart keepalived
+      args:
+        executable: /bin/bash
+```
