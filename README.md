@@ -1600,6 +1600,11 @@ LISTEN   0       128              [::]:22            [::]:*      users:(("sshd",
         databases: ejabberd-domain-local
         method: scram-sha-256
         create: true
+    - name: Config. Bash. Restart postgresql.service
+      ansible.builtin.shell: |
+        systemctl restart postgresql
+      args:   
+        executable: /bin/bash
 ```
 
 Приведём параметры главного конфигурационного файла _ejabberd_ к такому же виду, как и на остальных серверах кластера:
