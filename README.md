@@ -1448,8 +1448,9 @@ LISTEN   0       128              [::]:22            [::]:*      users:(("sshd",
 Дальнейшие шаги по настройке и добавлению панелей производятся уже в веб-интерфейсе установленного сервиса, доступном по адресу https://имя_хоста:3000
 
 #### Нештатные ситуации
-Как уже говорилось ранее, Ejabberd настроен для работы в режиме кластера из двух серверов, поэтому у нас изначально поддерживается стабильная работа в случае сбоя. Рассмотрим добавление
-нового узла, на случай выхода из строя одного из серверов, таким образом, чтобы у нас сохранился отказоустойчивый режим работы в нештатной ситуации.
+Как уже говорилось ранее, демон _Ejabberd_ и СУБД _Postgresql_ у нас настроены для работы в режиме кластера из двух пар серверов, поэтому в нашем стенде 
+изначально поддерживается стабильная работа в случае сбоя. Рассмотрим добавление нового узла, на случай выхода из строя одного из серверов, таким образом, 
+чтобы в случае нештатной ситуации сохранился отказоустойчивый режим работы.
 
 Для этих целей в нашем стенде предусмотрена дополнительная виртуальная машина, которая не включена в вышеприведённую схему. Описание машины в Vagrantfile:
 ```
@@ -1708,3 +1709,82 @@ LISTEN   0       128              [::]:22            [::]:*      users:(("sshd",
       args:
         executable: /bin/bash
 ```
+
+Добавим его в кластер, используя одну из доступных нод:
+
+```
+- name: eJabberd | Add host to a cluster
+  hosts: r1server
+  become: true
+  tasks:
+    - name: Join ejabberd@e3server to cluster ejabberd@e1server or ejabberd@e2server
+      ansible.builtin.shell: |
+        ejabberdctl ping ejabberd@e1server | grep "pong" && ejabberdctl --no-timeout join_cluster 'ejabberd@e1server' || ejabberdctl --no-timeout join_cluster 'ejabberd@e2server' 
+      args:
+        executable: /bin/bash
+```
+
+Настроим сетевой интерфейс из сети управления так, чтобы он могучаствовать существующей конфигурации балансировщика _keepalived_:
+
+```
+- name: keepalived | Install and configure keepalived. Установка Keepalived на сервер r1server. Настройка главного конфигурационного файла.
+  hosts: r1server
+  become: true
+  tasks:
+    - name: Install package "keepalived" to latest version
+      ansible.builtin.apt:
+        name: keepalived
+        state: present
+        update_cache: yes
+    - name: Configure and start virtual ip
+      ansible.builtin.shell: |
+        echo 'global_defs {' > /etc/keepalived/keepalived.conf
+        echo '   notification_email {' >> /etc/keepalived/keepalived.conf
+        echo '     admin@example.net' >> /etc/keepalived/keepalived.conf
+        echo '   }' >> /etc/keepalived/keepalived.conf
+        echo '   notification_email_from kladmin@example.net' >> /etc/keepalived/keepalived.conf
+        echo '   smtp_server 127.0.0.1' >> /etc/keepalived/keepalived.conf
+        echo '   smtp_connect_timeout 30' >> /etc/keepalived/keepalived.conf
+        echo "   router_id $HOSTNAME" >> /etc/keepalived/keepalived.conf
+        echo '#  vrrp_skip_check_adv_addr' >> /etc/keepalived/keepalived.conf
+        echo '#  vrrp_strict' >> /etc/keepalived/keepalived.conf
+        echo '#  vrrp_garp_interval 0' >> /etc/keepalived/keepalived.conf
+        echo '#  vrrp_gna_interval 0' >> /etc/keepalived/keepalived.conf
+        echo '}' >> /etc/keepalived/keepalived.conf
+        echo ' ' >> /etc/keepalived/keepalived.conf
+        echo 'vrrp_track_process track_beam.smp {' >> /etc/keepalived/keepalived.conf
+        echo '    process beam.smp' >> /etc/keepalived/keepalived.conf
+        echo '    weight 10' >> /etc/keepalived/keepalived.conf
+        echo '    delay 1' >> /etc/keepalived/keepalived.conf
+        echo '}' >> /etc/keepalived/keepalived.conf
+        echo 'vrrp_instance VI_1 {' >> /etc/keepalived/keepalived.conf
+        echo '    garp_master_delay 5' >> /etc/keepalived/keepalived.conf
+        echo '    garp_master_repeat 5' >> /etc/keepalived/keepalived.conf
+        echo '    garp_lower_prio_delay 5' >> /etc/keepalived/keepalived.conf
+        echo '    garp_lower_prio_repeat 5' >> /etc/keepalived/keepalived.conf
+        echo '    garp_master_refresh 60' >> /etc/keepalived/keepalived.conf
+        echo '    garp_master_refresh_repeat 2' >> /etc/keepalived/keepalived.conf
+        echo '    state BACKUP' >> /etc/keepalived/keepalived.conf
+        echo '    nopreempt' >> /etc/keepalived/keepalived.conf
+        echo '    interface ens5' >> /etc/keepalived/keepalived.conf
+        echo '#   smtp_alert' >> /etc/keepalived/keepalived.conf
+        echo '    virtual_router_id 51' >> /etc/keepalived/keepalived.conf
+        echo '    priority 99' >> /etc/keepalived/keepalived.conf
+        echo '    advert_int 5' >> /etc/keepalived/keepalived.conf
+        echo '    authentication {' >> /etc/keepalived/keepalived.conf
+        echo '        auth_type PASS' >> /etc/keepalived/keepalived.conf
+        echo '        auth_pass P@sswd' >> /etc/keepalived/keepalived.conf
+        echo '    }' >> /etc/keepalived/keepalived.conf
+        echo '    virtual_ipaddress {' >> /etc/keepalived/keepalived.conf
+        echo '        192.168.121.9 label keepalived_addr' >> /etc/keepalived/keepalived.conf
+        echo '    }' >> /etc/keepalived/keepalived.conf
+        echo '    track_process {' >> /etc/keepalived/keepalived.conf
+        echo '        track_beam.smp' >> /etc/keepalived/keepalived.conf
+        echo '    }' >> /etc/keepalived/keepalived.conf
+        echo '}' >> /etc/keepalived/keepalived.conf
+      args:
+        executable: /bin/bash
+        chdir: /etc/keepalived/
+```
+
+Здесь устанавливается самый низкий приоритет ноды - *99*. У _e1server_ и _e2server_ - *101* и *100*, соответственно.
