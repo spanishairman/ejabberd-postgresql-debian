@@ -142,9 +142,8 @@ e1server.vm.provision "shell", inline: <<-SHELL
 за исключением файерволла - установка iptables (nftables) и настройка правил осуществляется на этапе установки.
 
 ##### Ejabberd
-![Ejabberd](/pictures/ejabberd.png)
 ###### Установка
-Установка _Ejabberd_ производится из репозиториев _"bookworm-backports"_. Для этого создаём следующую задачу:
+![Ejabberd](/pictures/ejabberd.png) Установка _Ejabberd_ производится из репозиториев _"bookworm-backports"_. Для этого создаём следующую задачу:
 
 ```
 - name: eJabberd | Group of servers "ejserver". Install and configure ejabberd. Installing "ejabberd" packages on the "ejserver" server group
@@ -352,7 +351,7 @@ host_config:
 ```
 
 ###### Настройка безопасного подключения
-Настроим _TLS_-шифрование для подключений к нашим серверам. Создадим свой локальный Удостоверяющий Центр для выпуска серверных сертификатов, 
+![XCA](/pictures/xca.png)Настроим _TLS_-шифрование для подключений к нашим серверам. Создадим свой локальный Удостоверяющий Центр для выпуска серверных сертификатов, 
 которым будет доверять клиентское ПО - браузер или _xmpp_-клиент. 
 
 Для этих целей отлично подойдет _XCA_ - [приложение](https://hohnstaedt.de/xca/), предназначеное для создания 
