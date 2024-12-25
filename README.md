@@ -1446,3 +1446,265 @@ LISTEN   0       128              [::]:22            [::]:*      users:(("sshd",
 ```
 
 Дальнейшие шаги по настройке и добавлению панелей производятся уже в веб-интерфейсе установленного сервиса, доступном по адресу https://имя_хоста:3000
+
+#### Нештатные ситуации
+Как уже говорилось ранее, Ejabberd настроен для работы в режиме кластера из двух серверов, поэтому у нас изначально поддерживается стабильная работа в случае сбоя. Рассмотрим добавление
+нового узла, на случай выхода из строя одного из серверов, таким образом, чтобы у нас сохранился отказоустойчивый режим работы в нештатной ситуации.
+
+Для этих целей в нашем стенде предусмотрена дополнительная виртуальная машина, которая не включена в вышеприведённую схему. Описание машины в Vagrantfile:
+```
+  config.vm.define "Debian12-r1" do |r1server|
+  r1server.vm.box = "/home/max/vagrant/images/debian12"
+  r1server.vm.network :private_network,
+       :type => 'ip',
+       :libvirt__forward_mode => 'veryisolated',
+       :libvirt__dhcp_enabled => false,
+       :ip => '192.168.1.4',
+       :libvirt__netmask => '255.255.255.248',
+       :libvirt__network_name => 'vagrant-libvirt-inet1',
+       :libvirt__always_destroy => false
+  r1server.vm.network :private_network,
+       :type => 'ip',
+       :libvirt__forward_mode => 'veryisolated',
+       :libvirt__dhcp_enabled => false,
+       :ip => '192.168.1.17',
+       :libvirt__netmask => '255.255.255.248',
+       :libvirt__network_name => 'vagrant-libvirt-srv1',
+       :libvirt__always_destroy => false
+  r1server.vm.provider "libvirt" do |lvirt|
+      lvirt.memory = "1024"
+      lvirt.cpus = "1"
+      lvirt.title = "Debian12-r1Server"
+      lvirt.description = "Виртуальная машина на базе дистрибутива Debian Linux. r1Server"
+      lvirt.management_network_name = "vagrant-libvirt-mgmt"
+      lvirt.management_network_address = "192.168.121.0/24"
+      lvirt.management_network_keep = "true"
+      lvirt.management_network_mac = "52:54:00:27:28:90"
+  end
+  r1server.vm.provision "file", source: "ca/e3server.pem", destination: "~/e3server.pem"
+  r1server.vm.provision "shell", inline: <<-SHELL
+      brd='*************************************************************'
+      echo "$brd"
+      echo 'Set Hostname'
+      hostnamectl set-hostname r1server
+      echo "$brd"
+      sed -i 's/debian12/r1server/' /etc/hosts
+      sed -i 's/debian12/r1server/' /etc/hosts
+      echo '192.168.1.2 e1server.domain.local e1server' >> /etc/hosts
+      echo '192.168.1.3 e2server.domain.local e2server' >> /etc/hosts
+      echo '192.168.1.10 psql1server.domain.local psql1server' >> /etc/hosts
+      echo '192.168.1.11 psql2server.domain.local psql2server' >> /etc/hosts
+      echo "$brd"
+      echo 'Изменим ttl для работы через раздающий телефон'
+      echo "$brd"
+      sysctl -w net.ipv4.ip_default_ttl=66
+      echo "$brd"
+      echo 'Если ранее не были установлены, то установим необходимые  пакеты'
+      echo "$brd"
+      export DEBIAN_FRONTEND=noninteractive
+      apt update
+      apt install -y iptables iptables-persistent
+      # Политика по умолчанию для цепочки INPUT - DROP
+      iptables -P INPUT DROP
+      # Политика по умолчанию для цепочки OUTPUT - DROP
+      iptables -P OUTPUT DROP
+      # Политика по умолчанию для цепочки FORWARD - DROP
+      iptables -P FORWARD DROP
+      # Базовый набор правил: разрешаем локалхост, запрещаем доступ к адресу сети обратной петли не от локалхоста, разрешаем входящие пакеты со статусом установленного сонединения.
+      iptables -A INPUT -i lo -j ACCEPT
+      iptables -A INPUT ! -i lo -d 127.0.0.0/8 -j REJECT
+      iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+      # Разрешим транзит трафика.
+      iptables -A FORWARD -j ACCEPT
+      # Открываем исходящие
+      iptables -A OUTPUT -j ACCEPT
+      # Разрешим входящие с хоста управления.
+      iptables -A INPUT -s 192.168.121.1 -m tcp -p tcp --dport 22 -j ACCEPT
+      # Также, разрешим входящие для виртуальных хостов по ssh и для серверов баз данных во всём диапазоне tcp
+      iptables -A INPUT -s 192.168.1.0/28 -m multiport -m tcp -p tcp --dports 22,9100 -j ACCEPT
+      # Откроем ICMP ping
+      iptables -A INPUT -p icmp -m icmp --icmp-type 8 -j ACCEPT
+      netfilter-persistent save
+      echo "net.ipv4.conf.all.forwarding = 1" >> /etc/sysctl.conf
+      sysctl -p
+      SHELL
+  end
+```
+Здесь мы видим, что данная машине имеет три сетевых интерфейса: один для упрвления машиной с хоста виртуализации и два в изолированных сетях - _"vagrant-libvirt-inet1"_ и _vagrant-libvirt-srv1_. 
+В зависимости от роли резервного сервера, лишний сетевой интерфейс будет отключен при выполнении yml-сценария восстановления.
+
+##### Ejabberd
+Рассмотрим ситуацию, когда у нас становится недоступным один из узлов сервиса _Jabber_. _Ansible_ _yml_-файл с сценарием для восстановления кластера находится [здесь](/files/rescue.yml). 
+
+Рассмотрим его подробно. Для начала настроим сетевые параметры и зададим имя хоста, а также зададим правила межсетевого экранирования:
+
+```
+- name: Rescue | r1server. Change ip-address for ens6. Add rule. Install and configure ejabberd
+  hosts: r1server
+  become: true
+  tasks:
+    - name: r1server. Down iface. Set new ip-address. Up iface
+      ansible.builtin.shell: |
+        ifdown ens6
+        ifdown ens7
+        sed -i '/iface ens6/{n;s/address 192\.168\.1\..*/address 192.168.1.4/}' /etc/network/interfaces
+        ifup ens6
+        hostnamectl set-hostname e3server
+        sed -i 's/r1server/e3server/' /etc/hosts
+        sed -i 's/r1server/e3server/' /etc/hosts
+        echo '192.168.1.4 e3server.domain.local e1server' >> /etc/hosts
+        iptables -A INPUT -s 192.168.121.1 -m tcp -p tcp --dport 5280 -j ACCEPT
+        iptables -A INPUT -s 192.168.1.0/29 -m tcp -m multiport -p tcp --dports 5222,5223,5269,5443,5280,1883,4369,4200:4210 -j ACCEPT
+        iptables -A INPUT -s 192.168.1.0/28 -m tcp -m multiport -p tcp --dports 22,9100,9102 -j ACCEPT
+        iptables -A INPUT -p vrrp -d 224.0.0.18 -j ACCEPT
+        netfilter-persistent save
+        ip route add 192.168.1.8/29 via 192.168.1.1
+        ip route save > /etc/my-routes
+        echo 'up ip route restore < /etc/my-routes' >> /etc/network/interfaces
+      args:
+        executable: /bin/bash
+```
+
+Далее, настраиваем репозитории и устанавливаем необходимые пакеты:
+
+```
+- name: Rescue | r1server. Install and configure ejabberd
+  hosts: r1server
+  become: true
+  tasks:
+    - name: APT. Add Backports repository into sources list
+      ansible.builtin.apt_repository:
+        repo: deb http://deb.debian.org/debian bookworm-backports main contrib non-free
+        state: present
+    - name: APT. Update the repository cache and install packages "eJabberd", "erlang-p1-pgsql", "python3-psycopg2", "acl" to latest version using default release bookworm-backport
+      ansible.builtin.apt:
+        name: ejabberd,erlang-p1-pgsql,python3-psycopg2,acl
+        state: present
+        default_release: bookworm-backports
+        update_cache: yes
+```
+
+На серверах кластера СУБД редоставим доступ для пользователя `ejabberd` к базе данных `ejabberd-domain-local` для подключения с нашего нового сервера:
+
+```
+- name: PostgreSQL | Group of servers "psqlserver".
+  hosts: psqlserver
+  become: true
+  tasks:
+    - name: Config. Edit pg_hba configuration file. Add e3server access. Открываем доступ с третьей ноды Jabber-сервера к базе ejabberd-domain-local для пользователя ejabberd.
+      postgresql_pg_hba:
+        dest: /etc/postgresql/15/main/pg_hba.conf
+        contype: host
+        users: ejabberd
+        source: 192.168.1.4
+        databases: ejabberd-domain-local
+        method: scram-sha-256
+        create: true
+```
+
+Приведём параметры главного конфигурационного файла _ejabberd_ к такому же виду, как и на остальных серверах кластера:
+
+```
+- name: Rescue | r1server. Confgure for domainname and psql1server connect. Granting administrator account rights
+  hosts: r1server
+  become: true
+  tasks:
+    - name: Edit ejabberd.yml for domainname.
+      ansible.builtin.shell: |
+        sed -i 's/localhost/domain.local/' ejabberd.yml
+      args:
+        executable: /bin/bash
+        chdir: /etc/ejabberd/
+    - name: Edit ejabberd.yml for connection to remote db.
+      ansible.builtin.shell: |
+        echo ''  >> ejabberd.yml
+        echo '# Database settings' >> ejabberd.yml
+        echo 'host_config:' >> ejabberd.yml
+        echo '  domain.local:' >> ejabberd.yml
+        echo '    sql_type: pgsql' >> ejabberd.yml
+        echo '    sql_server: 192.168.1.10' >> ejabberd.yml
+        echo '    sql_database: ejabberd-domain-local' >> ejabberd.yml
+        echo '    sql_username: ejabberd' >> ejabberd.yml
+        echo '    sql_password: Inc0gn1t0' >> ejabberd.yml
+        echo '    auth_method:' >> ejabberd.yml
+        echo '      - sql' >> ejabberd.yml
+      args:
+        executable: /bin/bash
+        chdir: /etc/ejabberd/
+    - name: Edit ejabberd.yml for granting administrator account rights.
+      ansible.builtin.shell: |
+        echo ''  >> ejabberd.yml
+        echo '    acl:' >> ejabberd.yml
+        echo '      admin:' >> ejabberd.yml
+        echo '        user: admin@domain.local' >> ejabberd.yml
+        echo ''  >> ejabberd.yml
+        echo '    access_rules:' >> ejabberd.yml
+        echo '      configure:' >> ejabberd.yml
+        echo '        allow: admin' >> ejabberd.yml
+        systemctl restart ejabberd.service
+      args:
+        executable: /bin/bash
+        chdir: /etc/ejabberd/
+```
+
+Настроим параметры для _TLS_, для чего укажем путь к сертификату и закрытому ключу:
+
+```
+- name: Rescue | r1server. Configuring the e3server server certificate
+  hosts: r1server
+  become: true
+  tasks:
+    - name: Edit ejabberd.yml
+      ansible.builtin.shell: |
+        cp /home/vagrant/e3server.pem .
+        chown root:ejabberd e3server.pem
+        chmod 640 e3server.pem
+        sed -i 's/ejabberd.pem/e3server.pem/' ejabberd.yml
+        systemctl restart ejabberd.service
+      args:
+        executable: /bin/bash
+        chdir: /etc/ejabberd/
+```
+
+Подготовим наш хост для добавления его в кластер _Ejabberd_:
+
+```
+- name: eJabberd | Server "r1server". Confgure Erlang. Pre-configuration for creating a cluster
+  hosts: r1server
+  become: true
+  tasks:
+    - name: Change default Erlang node. Change default nodename for use a %HOSTNAME. ejabberd@localhost -> ejabberd@hostname. Specify the acceptable range of ports
+      ansible.builtin.shell: |
+        OLDNODE=ejabberd@localhost
+        NEWNODE=ejabberd@$HOSTNAME
+        OLDFILE=/var/lib/ejabberd/oldfiles/old.backup
+        NEWFILE=/var/lib/ejabberd/new.backup
+        mkdir /var/lib/ejabberd/oldfiles
+        chown -R ejabbed:ejabberd /var/lib/ejabberd/oldfiles
+        ejabberdctl --node $OLDNODE backup $OLDFILE
+        ejabberdctl --node $OLDNODE stop
+        mv /var/lib/ejabberd/*.* /var/lib/ejabberd/oldfiles/
+        sed -i "s/#ERLANG_NODE=ejabberd@localhost/ERLANG_NODE=$NEWNODE/" /etc/default/ejabberd
+        ejabberdctl start
+        ejabberdctl mnesia_change_nodename $OLDNODE $NEWNODE $OLDFILE $NEWFILE
+        ejabberdctl install_fallback $NEWFILE
+        ejabberdctl stop
+        ejabberdctl start
+        echo 'HWSTFERDACTZHIEXBZGN' > /var/lib/ejabberd/.erlang.cookie
+      args:
+        executable: /bin/bash
+    - name: Specify the acceptable range of ports.
+      ansible.builtin.shell: |
+        sed -i "s/#FIREWALL_WINDOW=/FIREWALL_WINDOW=4200-4210/" /etc/default/ejabberd
+      args:
+        executable: /bin/bash
+    - name: Reboot after change nodename.
+      ansible.builtin.shell: |
+        pkill -9 beam.smp
+        systemctl stop epmd.service
+        sleep 5
+        systemctl start ejabberd.service
+        sleep 5
+      args:
+        executable: /bin/bash
+```
