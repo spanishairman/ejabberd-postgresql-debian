@@ -142,8 +142,9 @@ e1server.vm.provision "shell", inline: <<-SHELL
 за исключением файерволла - установка iptables (nftables) и настройка правил осуществляется на этапе установки.
 
 ##### Ejabberd
+![Ejabberd](/pictures/ejabberd.png)
 ###### Установка
-![Ejabberd](/pictures/ejabberd.png) Установка _Ejabberd_ производится из репозиториев _"bookworm-backports"_. Для этого создаём следующую задачу:
+Установка _Ejabberd_ производится из репозиториев _"bookworm-backports"_. Для этого создаём следующую задачу:
 
 ```
 - name: eJabberd | Group of servers "ejserver". Install and configure ejabberd. Installing "ejabberd" packages on the "ejserver" server group
