@@ -1,0 +1,70 @@
+---
+- name: bacula | Install and configure nfs and bacula-server. Установка "nfs" and "bacula" на группу серверов "bkserver". Настройка конфигурационных файлов.
+  hosts: bkserver
+  become: true
+  tasks:
+    - name: Install packages "bacula" and "nfs" to latest version
+      ansible.builtin.apt:
+        name: nfs-common,nfs-kernel-server,bacula
+        state: present
+        update_cache: true
+    - name: Configure and start nfs-server and bacula-dir, bacula-sd, bacula-catalog
+      ansible.builtin.shell: |
+        mkdir -p /srv/share/upload/psql{1,2}server/{archive,backup}
+        chmod -R o+w /srv/share/upload
+        echo '/srv/share/upload 192.168.1.10/32(rw,sync,root_squash,no_subtree_check)' >> /etc/exports
+        echo '/srv/share/upload 192.168.1.11/32(rw,sync,root_squash,no_subtree_check)' >> /etc/exports
+        exportfs -r
+        usermod -a -G bacula vagrant
+        bsd=$( cat /etc/bacula/bacula-sd.conf | grep Password | head -n 1 | awk '{print $3}' )
+        dsd=$( cat /home/vagrant/bacula-dir-storage.conf | grep Password | head -n 1 | awk '{print $3}'  )
+        sed -i "s/$dsd/$bsd/" /home/vagrant/bacula-dir-storage.conf
+        cat /home/vagrant/bacula-dir-jobs.conf >> /etc/bacula/bacula-dir.conf
+        cat /home/vagrant/bacula-dir-filesets.conf >> /etc/bacula/bacula-dir.conf
+        cat /home/vagrant/bacula-dir-schedules.conf >> /etc/bacula/bacula-dir.conf
+        cat /home/vagrant/bacula-dir-clients.conf >> /etc/bacula/bacula-dir.conf
+        cat /home/vagrant/bacula-dir-storage.conf >> /etc/bacula/bacula-dir.conf
+        cat /home/vagrant/bacula-dir-pools.conf >> /etc/bacula/bacula-dir.conf
+        cat /home/vagrant/bacula-sd.conf >> /etc/bacula/bacula-sd.conf
+        mkdir -p /var/lib/bacula/storage
+        chown -R bacula:bacula /var/lib/bacula/storage
+        sed -i 's/SDAddress = 127.0.0.1/SDAddress = 0.0.0.0/' /etc/bacula/bacula-sd.conf
+        systemctl restart bacula-director.service
+        systemctl restart bacula-dir.service
+        systemctl restart bacula-sd.service
+      args:
+        executable: /bin/bash
+        chdir: /etc/bacula/
+
+- name: Bacula | "Baculas" group of servers. Install and configure "bacula-client". Installing "bacula-client" packages on the servers group "Baculas"
+  hosts:
+    baculas
+  become: true
+  tasks:
+    - name: APT. Update the repository cache and install packages "bacula-client" to latest version using default release bookworm-backport
+      ansible.builtin.apt:
+        name: bacula-client
+        state: present
+        update_cache: yes
+    - name: Bacula-client. Copy configuration file. Restart of service
+      ansible.builtin.shell: |
+        cp /home/vagrant/bacula-fd.conf /etc/bacula/
+        systemctl restart bacula-fd.service
+      args:
+        executable: /bin/bash
+
+- name: Bacula-client | Configuration a bacula client for a Before and After scripts.
+  hosts:
+    baculas-script
+  become: true
+  tasks:
+    - name: Bash. Create a directory for archiving tasks
+      ansible.builtin.shell: |
+        mkdir -p /bacula-backup
+        chown -R postgres:postgres /bacula-backup
+        cp /home/vagrant/bacula-{before,after}-dump.sh /etc/bacula/scripts/
+        chown bacula:bacula /etc/bacula/scripts/bacula-{before,after}-dump.sh
+        chmod u+x /etc/bacula/scripts/bacula-{before,after}-dump.sh
+        systemctl restart bacula-fd.service
+      args:
+        executable: /bin/bash

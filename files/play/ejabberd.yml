@@ -1,0 +1,352 @@
+---
+- name: eJabberd | Group of servers "ejserver". Install and configure ejabberd. Installing "ejabberd" packages on the "ejserver" server group
+  hosts: ejserver
+  become: true
+  tasks:
+    - name: APT. Add Backports repository into sources list
+      ansible.builtin.apt_repository:
+        repo: deb http://deb.debian.org/debian bookworm-backports main contrib non-free
+        state: present
+    - name: APT. Update the repository cache and install packages "eJabberd", "erlang-p1-pgsql", "python3-psycopg2", "acl" to latest version using default release bookworm-backport
+      ansible.builtin.apt:
+        name: ejabberd,erlang-p1-pgsql,python3-psycopg2,acl
+        state: present
+        default_release: bookworm-backports
+        update_cache: yes
+
+- name: PostgreSQL | Group of servers "psqlserver". Install packages "postgresql", "nfs", "acl" on the "psqlserver" server group
+  hosts: psqlserver
+  become: true
+  tasks:
+    - name: APT. Add Backports repository into sources list.
+      ansible.builtin.apt_repository:
+        repo: deb http://deb.debian.org/debian bookworm-backports main contrib non-free
+        state: present
+    - name: APT. Update the repository cache and install packages "postgresqql", "python3-psycopg2", "acl", "nfs-common" to latest version using default release bookworm-backport
+      ansible.builtin.apt:
+        name: postgresql,python3-psycopg2,acl,nfs-common
+        state: present
+        default_release: bookworm-backports
+        update_cache: yes
+    - name: Config. Edit pg_hba configuration file. Add e1server access. Открываем доступ с первой ноды Jabber-сервера к базе ejabberd-domain-local для пользователя ejabberd.
+      postgresql_pg_hba:
+        dest: /etc/postgresql/15/main/pg_hba.conf
+        contype: host
+        users: ejabberd
+        source: 192.168.1.2
+        databases: ejabberd-domain-local
+        method: scram-sha-256
+        create: true
+    - name: Config. Edit pg_hba configuration file. Add e2server access. Открываем доступ со второй ноды Jabber-сервера к базе ejabberd-domain-local для пользователя ejabberd.
+      postgresql_pg_hba:
+        dest: /etc/postgresql/15/main/pg_hba.conf
+        contype: host
+        users: ejabberd
+        source: 192.168.1.3
+        databases: ejabberd-domain-local
+        method: scram-sha-256
+        create: true
+    - name: Config. Bash. Edit postgresql.conf for enable all interfaces. Разрешаем входящие подключения к порту 5432 на всех интерфейсах.
+      ansible.builtin.shell: |
+        echo "listen_addresses = '*'" >> postgresql.conf
+        systemctl restart postgresql
+        systemctl restart bacula-fd.service
+      args:
+        executable: /bin/bash
+        chdir: /etc/postgresql/15/main/
+
+- name: PostgreSQL | Primary Server. Create database "ejabberd_domain_local" and role "ejabberd" on the Primary.
+  hosts: psql1server
+  become: true
+  become_user: postgres
+  vars:
+    allow_world_readable_tmpfiles: true
+  tasks:
+    - name: Create a new database with name "ejabberd-domain-local".
+      community.postgresql.postgresql_db:
+        name: ejabberd-domain-local
+        comment: "eJabberd database"
+    - name: Connect to eJabberd database, create "ejabberd" user, and grant access to database and all tables.
+      community.postgresql.postgresql_user:
+        db: ejabberd-domain-local
+        name: ejabberd
+        password: P@ssw0rd
+        expires: "infinity"
+    - name: Connect to eJabberd database, grant privileges on "ejabberd-domain-local" database objects (database) for "ejabberd" role.
+      community.postgresql.postgresql_privs:
+        database: ejabberd-domain-local
+        state: present
+        privs: ALL
+        type: database
+        roles: ejabberd
+    - name: Connect to eJabberd database, grant privileges on "ejabberd-domain-local" database objects (schema) for "ejabberd" role.
+      community.postgresql.postgresql_privs:
+        database: ejabberd-domain-local
+        state: present
+        privs: CREATE
+        type: schema
+        objs: public
+        roles: ejabberd
+
+- name: PostgreSQL | Primary Server. Configuration WAL and access for replication.
+  hosts: psql1server
+  become: true
+  become_user: postgres
+  vars:
+    allow_world_readable_tmpfiles: true
+  tasks:
+    - name: Edit pg_hba configuration file. Access for Replica from psql2server.
+      postgresql_pg_hba:
+        dest: /etc/postgresql/15/main/pg_hba.conf
+        contype: host
+        users: replica_role
+        source: 192.168.1.11
+        databases: replication
+        method: scram-sha-256
+        create: true
+    - name: Create "replica_role" user with REPLICATION attributes for connection from Replica node.
+      community.postgresql.postgresql_user:
+        name: replica_role
+        password: P@ssw0rd
+        expires: "infinity"
+        role_attr_flags: REPLICATION,LOGIN
+
+- name: PostgreSQL | Primary Server. Creating a directory for archiving. Settngs for replication and archiving
+  hosts: psql1server
+  become: true
+  tasks:
+    - name: Bash. Create a directory for nfs-mounting and archiving
+      ansible.builtin.shell: |
+        test ! -d /mnt/nfs && mkdir -p $_
+        echo "192.168.1.12:/srv/share/upload/ /mnt/nfs nfs vers=3,noauto,x-systemd.automount 0 0" >> /etc/fstab
+        systemctl daemon-reload
+        systemctl restart remote-fs.target
+      args:
+        executable: /bin/bash
+    - name: Config. Bash. Edit postgresql.conf configuration file
+      ansible.builtin.shell: |
+        sed -i 's/#wal_level = replica/wal_level = replica/' postgresql.conf
+        sed -i 's/#max_wal_senders = 10/#max_wal_senders = 10/' postgresql.conf
+        sed -i 's/#max_replication_slots = 10/max_replication_slots = 10/' postgresql.conf
+        sed -i 's/#wal_keep_size = 0/wal_keep_size = 100/' postgresql.conf
+        sed -i 's/#max_slot_wal_keep_size = -1/max_slot_wal_keep_size = -1/' postgresql.conf
+        sed -i 's/#wal_sender_timeout = 60s/wal_sender_timeout = 60s/' postgresql.conf
+        sed -i 's/#track_commit_timestamp = off/track_commit_timestamp = off/' postgresql.conf
+        sed -i 's/#archive_mode = off/archive_mode = on/' postgresql.conf
+        echo '# Archive and restore commsnfs' >> postgresql.conf
+        echo "archive_command = 'test ! -f /mnt/nfs/psql1server/archive/%f && cp %p /mnt/nfs/psql1server/archive/%f'" >> postgresql.conf
+        echo "restore_command = 'cp /mnt/nfs/psql1server/archive/%f %p'" >> postgresql.conf
+        systemctl restart postgresql
+      args:
+        executable: /bin/bash
+        chdir: /etc/postgresql/15/main/
+
+- name: PostgreSQL | Secondary Server. Configuration a Replica server and start replication.
+  hosts: psql2server
+  become: true
+  tasks:
+    - name: Config. Edit pg_hba configuration file. Access for Replica from psql1server. Разрешаем удалённое подключение пользователю replica_role для получения wal принимающим сервером.
+      postgresql_pg_hba:
+        dest: /etc/postgresql/15/main/pg_hba.conf
+        contype: host
+        users: replica_role
+        source: 192.168.1.10
+        databases: replication
+        method: scram-sha-256
+        create: true
+    - name: Bash. Create nfs dir. Configure bacula-client
+      ansible.builtin.shell: |
+        test ! -d /mnt/nfs && mkdir -p $_
+        echo "192.168.1.12:/srv/share/upload/ /mnt/nfs nfs vers=3,noauto,x-systemd.automount 0 0" >> /etc/fstab
+        systemctl daemon-reload
+        systemctl restart remote-fs.target
+      args:
+        executable: /bin/bash
+    - name: Config. Bash. Edit postgresql.conf configuration file.
+      ansible.builtin.shell: |
+        sed -i 's/#wal_level = replica/wal_level = replica/' postgresql.conf
+        sed -i 's/#max_wal_senders = 10/#max_wal_senders = 10/' postgresql.conf
+        sed -i 's/#max_replication_slots = 10/max_replication_slots = 10/' postgresql.conf
+        sed -i 's/#wal_keep_size = 0/wal_keep_size = 100/' postgresql.conf
+        sed -i 's/#max_slot_wal_keep_size = -1/max_slot_wal_keep_size = -1/' postgresql.conf
+        sed -i 's/#wal_sender_timeout = 60s/wal_sender_timeout = 60s/' postgresql.conf
+        sed -i 's/#track_commit_timestamp = off/track_commit_timestamp = off/' postgresql.conf
+        sed -i 's/#archive_mode = off/archive_mode = on/' postgresql.conf
+        echo '# Archive and restore commsnfs' >> postgresql.conf
+        echo "archive_command = 'test ! -f /mnt/nfs/psql2server/archive/%f && cp %p /mnt/nfs/psql2server/archive/%f'" >> postgresql.conf
+        echo "restore_command = 'cp /mnt/nfs/psql2server/archive/%f %p'" >> postgresql.conf
+      args:
+        executable: /bin/bash
+        chdir: /etc/postgresql/15/main/
+    - name: Config. Bash. Stop postgresql service, remove work directory. Set PGPASSWORD variable, start replication.
+      ansible.builtin.shell: |
+        systemctl stop postgresql
+        rm -rf /var/lib/postgresql/15/main
+        PGPASSWORD=P@ssw0rd
+        export PGPASSWORD
+        pg_basebackup -h 192.168.1.10 -U replica_role -X stream -R -P -D /var/lib/postgresql/15/main
+        chown -R postgres: /var/lib/postgresql/15/main
+        systemctl start postgresql
+      args:
+        executable: /bin/bash
+
+# Задаём переменную, хранящую пароль для запуска утилиты pg_basebackup и подключения к Primary серверу, Также можно использовать файл паролей, какой из методов безопаснее, вопрос открытый:
+
+#        echo "# hostname:port:database:username:password" > ~/.pgpass
+
+#        echo "192.168.1.10:5432:*:replica_role:P@ssw0rd" >> ~/.pgpass
+
+#        chmod 600 ~/.pgpass
+
+- name: PostgreSQL | Creating tables in the database "ejabberd-domain-local" on the Master. Remote connection
+  hosts: e1server
+  tasks:
+    - name: Connect from e1server to psql1server and run script.
+      postgresql_query:
+        login_host: 192.168.1.10
+        db: ejabberd-domain-local
+        login_user: ejabberd
+        login_password: P@ssw0rd
+        path_to_script: /usr/share/ejabberd/sql/pg.sql
+
+- name: PostgreSQL | Master. Backup cluster. Creating a cluster backup on servers with PostgreSQL databases
+  hosts: psql1server
+  become: true
+  become_user: postgres
+  tasks:
+    - name: Create a backup for Postgresql cluster
+      ansible.builtin.shell: pg_basebackup -D /mnt/nfs/psql1server/backup
+
+- name: PostgreSQL | Replica. Backup cluster. Creating a cluster backup on servers with PostgreSQL databases
+  hosts: psql2server
+  become: true
+  become_user: postgres
+  tasks:
+    - name: Create a backup for Postgresql cluster
+      ansible.builtin.shell: pg_basebackup -D /mnt/nfs/psql2server/backup
+
+- name: eJabberd | Group of servers "ejserver". Confgure ejservers for domainname and psql1server connect. Granting administrator account rights
+  hosts: ejserver
+  become: true
+  tasks:
+    - name: Edit ejabberd.yml for domainname.
+      ansible.builtin.shell: |
+        sed -i 's/localhost/domain.local/' ejabberd.yml
+      args:
+        executable: /bin/bash
+        chdir: /etc/ejabberd/
+    - name: Edit ejabberd.yml for connection to remote db.
+      ansible.builtin.shell: |
+        echo ''  >> ejabberd.yml
+        echo '# Database settings' >> ejabberd.yml
+        echo 'host_config:' >> ejabberd.yml
+        echo '  domain.local:' >> ejabberd.yml
+        echo '    sql_type: pgsql' >> ejabberd.yml
+        echo '    sql_server: 192.168.1.10' >> ejabberd.yml
+        echo '    sql_database: ejabberd-domain-local' >> ejabberd.yml
+        echo '    sql_username: ejabberd' >> ejabberd.yml
+        echo '    sql_password: P@ssw0rd' >> ejabberd.yml
+        echo '    auth_method:' >> ejabberd.yml
+        echo '      - sql' >> ejabberd.yml
+      args:
+        executable: /bin/bash
+        chdir: /etc/ejabberd/
+    - name: Edit ejabberd.yml for granting administrator account rights.
+      ansible.builtin.shell: |
+        echo ''  >> ejabberd.yml
+        echo '    acl:' >> ejabberd.yml
+        echo '      admin:' >> ejabberd.yml
+        echo '        user: admin@domain.local' >> ejabberd.yml
+        echo ''  >> ejabberd.yml
+        echo '    access_rules:' >> ejabberd.yml
+        echo '      configure:' >> ejabberd.yml
+        echo '        allow: admin' >> ejabberd.yml
+        systemctl restart ejabberd.service
+      args:
+        executable: /bin/bash
+        chdir: /etc/ejabberd/
+
+- name: eJabberd | e1server. Create users - administrator and regular. Configuring the e1server server certificate
+  hosts: e1server
+  become: true
+  tasks:
+    - name: Add users. Edit ejabberd.yml
+      ansible.builtin.shell: |
+        ejabberdctl register admin domain.local P@ssw0rd
+        ejabberdctl register max domain.local P@$$w0rd
+      args:
+        executable: /bin/bash
+    - name: Configuring the e1server server certificate
+      ansible.builtin.shell: |
+        cp /home/vagrant/e1server.pem .
+        chown root:ejabberd e1server.pem
+        chmod 640 e1server.pem
+        sed -i 's/ejabberd.pem/e1server.pem/' ejabberd.yml
+        systemctl restart ejabberd.service
+      args:
+        executable: /bin/bash
+        chdir: /etc/ejabberd/
+
+- name: eJabberd | e2server. Configuring the e2server server certificate
+  hosts: e2server
+  become: true
+  tasks:
+    - name: Edit ejabberd.yml
+      ansible.builtin.shell: |
+        cp /home/vagrant/e2server.pem .
+        chown root:ejabberd e2server.pem
+        chmod 640 e2server.pem
+        sed -i 's/ejabberd.pem/e2server.pem/' ejabberd.yml
+        systemctl restart ejabberd.service
+      args:
+        executable: /bin/bash
+        chdir: /etc/ejabberd/
+
+- name: eJabberd | Group of servers "ejserver". Confgure Erlang. Pre-configuration for creating a cluster
+  hosts: ejserver
+  become: true
+  tasks:
+    - name: Change default Erlang node. Change default nodename for use a %HOSTNAME. ejabberd@localhost -> ejabberd@hostname. Specify the acceptable range of ports
+      ansible.builtin.shell: |
+        OLDNODE=ejabberd@localhost
+        NEWNODE=ejabberd@$HOSTNAME
+        OLDFILE=/var/lib/ejabberd/oldfiles/old.backup
+        NEWFILE=/var/lib/ejabberd/new.backup
+        mkdir /var/lib/ejabberd/oldfiles
+        chown -R ejabbed:ejabberd /var/lib/ejabberd/oldfiles
+        ejabberdctl --node $OLDNODE backup $OLDFILE
+        ejabberdctl --node $OLDNODE stop
+        mv /var/lib/ejabberd/*.* /var/lib/ejabberd/oldfiles/
+        sed -i "s/#ERLANG_NODE=ejabberd@localhost/ERLANG_NODE=$NEWNODE/" /etc/default/ejabberd
+        ejabberdctl start
+        ejabberdctl mnesia_change_nodename $OLDNODE $NEWNODE $OLDFILE $NEWFILE
+        ejabberdctl install_fallback $NEWFILE
+        ejabberdctl stop
+        ejabberdctl start
+        echo 'HWSTFERDACTZHIEXBZGN' > /var/lib/ejabberd/.erlang.cookie
+      args:
+        executable: /bin/bash
+    - name: Specify the acceptable range of ports.
+      ansible.builtin.shell: |
+        sed -i "s/#FIREWALL_WINDOW=/FIREWALL_WINDOW=4200-4210/" /etc/default/ejabberd
+      args:
+        executable: /bin/bash
+    - name: Reboot after change nodename.
+      ansible.builtin.shell: |
+        pkill -9 beam.smp
+        systemctl stop epmd.service
+        sleep 5
+        systemctl start ejabberd.service
+        sleep 5
+      args:
+        executable: /bin/bash
+
+- name: eJabberd | Create a cluster
+  hosts: e2server
+  become: true
+  tasks:
+    - name: Join ejabberd@e2server to cluster ejabberd@e1server
+      ansible.builtin.shell: |
+        ejabberdctl --no-timeout join_cluster 'ejabberd@e1server'
+      args:
+        executable: /bin/bash

@@ -1,0 +1,150 @@
+---
+- name: Prometheus-node-exporter | Install prometheus-node-exporter
+  hosts: prometheuses
+  become: true
+  tasks:
+    - name: APT. Update the repository cache and install packages "prometheus-node-exporter" to latest version
+      ansible.builtin.apt:
+        name: prometheus-node-exporter
+        state: present
+        update_cache: yes
+- name: Prometheus-postgres-exporter | Install and copy files
+  hosts: psqlserver
+  become: true
+  tasks:
+    - name: APT. Update the repository cache and install packages "prometheus-postgres-exporter" to latest version
+      ansible.builtin.apt:
+        name: prometheus-postgres-exporter
+        state: present
+        update_cache: yes
+    - name: prometheus-postgres-exporter. Copy configuration file
+      ansible.builtin.shell: |
+        cp prometheus-post.sql /usr/share/doc/prometheus-postgres-exporter/prometheus-post.sql
+        cp prometheus-postgres-exporter /etc/default/prometheus-postgres-exporter
+      args:
+        executable: /bin/bash
+        chdir: /home/vagrant/
+
+- name: Prometheus-postgres-exporter | Execute SQL commands to create the user prometheus and GRANTs
+  hosts: psql1server
+  become: true
+  become_user: postgres
+  tasks:
+    - name: Prometheus-postgres-exporter. Run script.
+      postgresql_query:
+        db: postgres
+        path_to_script: /usr/share/doc/prometheus-postgres-exporter/prometheus-post.sql
+
+- name: Prometheus-postgres-exporter | Restart Service
+  hosts: psqlserver
+  become: true
+  tasks:
+    - name: prometheus-postgres-exporter. Restart service
+      ansible.builtin.shell: |
+        sleep 5
+        systemctl restart prometheus-postgres-exporter.service
+      args:
+        executable: /bin/bash
+
+- name: Prometheus | mon1server. Install Prometheus. Add jobs for prometheus-postgres-exporter
+  hosts: monserver
+  become: true
+  tasks:
+    - name: APT. Add Backports repository into sources list
+      ansible.builtin.apt_repository:
+        repo: deb http://deb.debian.org/debian bookworm-backports main contrib non-free
+        state: present
+    - name: APT. Update the repository cache and install packages "prometheus", "adduser", "libfontconfig1", "musl" to latest version using default release bookworm-backport
+      ansible.builtin.apt:
+        name: prometheus,adduser,libfontconfig1,musl
+        state: present
+        default_release: bookworm-backports
+        update_cache: yes
+    - name: Prometheus. Add Jobs to prometheus.yml
+      ansible.builtin.shell: |
+        echo '' >> prometheus.yml
+        echo '  - job_name: psql1server' >> prometheus.yml
+        echo '    static_configs:' >> prometheus.yml
+        echo '      - targets: ['192.168.1.10:9187']' >> prometheus.yml
+        echo '' >> prometheus.yml
+        echo '  - job_name: psql2server' >> prometheus.yml
+        echo '    static_configs:' >> prometheus.yml
+        echo '      - targets: ['192.168.1.11:9187']' >> prometheus.yml
+        echo '' >> prometheus.yml
+        echo '  - job_name: psql1serverex' >> prometheus.yml
+        echo '    static_configs:' >> prometheus.yml
+        echo '      - targets: ['192.168.1.10:9100']' >> prometheus.yml
+        echo '' >> prometheus.yml
+        echo '  - job_name: psql2serverex' >> prometheus.yml
+        echo '    static_configs:' >> prometheus.yml
+        echo '      - targets: ['192.168.1.11:9100']' >> prometheus.yml
+        echo '' >> prometheus.yml
+        echo '  - job_name: e1serverex' >> prometheus.yml
+        echo '    static_configs:' >> prometheus.yml
+        echo '      - targets: ['192.168.1.2:9100']' >> prometheus.yml
+        echo '' >> prometheus.yml
+        echo '  - job_name: e2serverex' >> prometheus.yml
+        echo '    static_configs:' >> prometheus.yml
+        echo '      - targets: ['192.168.1.3:9100']' >> prometheus.yml
+        echo '' >> prometheus.yml
+        echo '  - job_name: gw1serverex' >> prometheus.yml
+        echo '    static_configs:' >> prometheus.yml
+        echo '      - targets: ['192.168.1.9:9100']' >> prometheus.yml
+        echo '' >> prometheus.yml
+        echo '  - job_name: bk1serverex' >> prometheus.yml
+        echo '    static_configs:' >> prometheus.yml
+        echo '      - targets: ['192.168.1.12:9100']' >> prometheus.yml
+        echo '' >> prometheus.yml
+        systemctl restart prometheus.service
+      args:
+        executable: /bin/bash
+        chdir: /etc/prometheus/
+
+- name: Grafana | Install Grafana
+  hosts: monserver
+  become: true
+  tasks:
+    - name: Grafana. Install. Enable and start of service
+      ansible.builtin.shell: |
+        dpkg -i grafana_11.4.0_amd64.deb
+        systemctl daemon-reload
+        systemctl enable grafana-server
+        systemctl start grafana-server
+      args:
+        executable: /bin/bash
+        chdir: /home/vagrant/
+- name: Grafana | Configure Grafana
+  hosts: monserver
+  become: true
+  tasks:
+    - name: Grafana. Configure. Enable and start of service
+      ansible.builtin.shell: |
+        cp /home/vagrant/mon1server.pem /etc/grafana/mon1server.pem
+        chown grafana:grafana /etc/grafana/mon1server.pem
+        sed -i "s/;protocol = http/protocol = https/" /etc/grafana/grafana.ini
+        sed -i "s/;domain = localhost/domain = grafana.domain.local/" /etc/grafana/grafana.ini
+        sed -i "s/;cert_file =/cert_file = \\/etc\\/grafana\\/mon1server.pem/" /etc/grafana/grafana.ini
+        sed -i "s/;cert_key =/cert_key = \\/etc\\/grafana\\/mon1server.pem/" /etc/grafana/grafana.ini
+        systemctl restart grafana-server.service
+      args:
+        executable: /bin/bash
+
+- name: Prometheus and Grafana | Restore dabases and plugins
+  hosts: monserver
+  become: true
+  tasks:
+    - name: Grafana. Configure. Enable and start of service
+      ansible.builtin.shell: |
+        systemctl stop grafana-server.service
+        systemctl stop prometheus.service
+        systemctl stop prometheus-node-exporter.service
+        sleep 2
+        rm -rf /var/lib/{grafana,prometheus}/*
+        tar -xf /home/vagrant/prometheus.tar
+        tar -xf /home/vagrant/grafana.tar
+        systemctl start prometheus-node-exporter.service
+        systemctl start prometheus.service
+        systemctl start grafana-server.service
+      args:
+        executable: /bin/bash
+        chdir: /

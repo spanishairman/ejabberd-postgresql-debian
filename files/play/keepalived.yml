@@ -1,0 +1,76 @@
+---
+- name: keepalived | Install and configure keepalived. Установка Keepalived на группу серверов ejserver. Настройка главного конфигурационного файла.
+  hosts: ejserver
+  become: true
+  tasks:
+    - name: Install package "keepalived" to latest version
+      ansible.builtin.apt:
+        name: keepalived
+        state: present
+        update_cache: yes
+    - name: Configure and start virtual ip
+      ansible.builtin.shell: |
+        echo 'global_defs {' > /etc/keepalived/keepalived.conf
+        echo '   notification_email {' >> /etc/keepalived/keepalived.conf
+        echo '     admin@example.net' >> /etc/keepalived/keepalived.conf
+        echo '   }' >> /etc/keepalived/keepalived.conf
+        echo '   notification_email_from kladmin@example.net' >> /etc/keepalived/keepalived.conf
+        echo '   smtp_server 127.0.0.1' >> /etc/keepalived/keepalived.conf
+        echo '   smtp_connect_timeout 30' >> /etc/keepalived/keepalived.conf
+        echo "   router_id $HOSTNAME" >> /etc/keepalived/keepalived.conf
+        echo '#  vrrp_skip_check_adv_addr' >> /etc/keepalived/keepalived.conf
+        echo '#  vrrp_strict' >> /etc/keepalived/keepalived.conf
+        echo '#  vrrp_garp_interval 0' >> /etc/keepalived/keepalived.conf
+        echo '#  vrrp_gna_interval 0' >> /etc/keepalived/keepalived.conf
+        echo '}' >> /etc/keepalived/keepalived.conf
+        echo ' ' >> /etc/keepalived/keepalived.conf
+        echo 'vrrp_track_process track_beam.smp {' >> /etc/keepalived/keepalived.conf
+        echo '    process beam.smp' >> /etc/keepalived/keepalived.conf
+        echo '    weight 10' >> /etc/keepalived/keepalived.conf
+        echo '    delay 1' >> /etc/keepalived/keepalived.conf
+        echo '}' >> /etc/keepalived/keepalived.conf
+        echo 'vrrp_instance VI_1 {' >> /etc/keepalived/keepalived.conf
+        echo '    garp_master_delay 5' >> /etc/keepalived/keepalived.conf
+        echo '    garp_master_repeat 5' >> /etc/keepalived/keepalived.conf
+        echo '    garp_lower_prio_delay 5' >> /etc/keepalived/keepalived.conf
+        echo '    garp_lower_prio_repeat 5' >> /etc/keepalived/keepalived.conf
+        echo '    garp_master_refresh 60' >> /etc/keepalived/keepalived.conf
+        echo '    garp_master_refresh_repeat 2' >> /etc/keepalived/keepalived.conf
+        echo '    state BACKUP' >> /etc/keepalived/keepalived.conf
+        echo '    nopreempt' >> /etc/keepalived/keepalived.conf
+        echo '    interface ens5' >> /etc/keepalived/keepalived.conf
+        echo '#   smtp_alert' >> /etc/keepalived/keepalived.conf
+        echo '    virtual_router_id 51' >> /etc/keepalived/keepalived.conf
+        echo '    priority 101' >> /etc/keepalived/keepalived.conf
+        echo '    advert_int 5' >> /etc/keepalived/keepalived.conf
+        echo '    authentication {' >> /etc/keepalived/keepalived.conf
+        echo '        auth_type PASS' >> /etc/keepalived/keepalived.conf
+        echo '        auth_pass P@sswd' >> /etc/keepalived/keepalived.conf
+        echo '    }' >> /etc/keepalived/keepalived.conf
+        echo '    virtual_ipaddress {' >> /etc/keepalived/keepalived.conf
+        echo '        192.168.121.9 label keepalived_addr' >> /etc/keepalived/keepalived.conf
+        echo '    }' >> /etc/keepalived/keepalived.conf
+        echo '    track_process {' >> /etc/keepalived/keepalived.conf
+        echo '        track_beam.smp' >> /etc/keepalived/keepalived.conf
+        echo '    }' >> /etc/keepalived/keepalived.conf
+        echo '}' >> /etc/keepalived/keepalived.conf
+      args:
+        executable: /bin/bash
+        chdir: /etc/keepalived/
+
+- name: keepalived | Configure keepalived, second node. Настройка приоритета для второй ноды.
+  hosts: e2server
+  become: true
+  tasks:
+    - name: Настройка приоритета для второй ноды.
+      ansible.builtin.shell: sed -i 's/priority 101/priority 100/' keepalived.conf
+      args:
+        executable: /bin/bash
+        chdir: /etc/keepalived/
+- name: Keepalived | Перезапуск Keepalived
+  hosts: ejserver
+  become: true
+  tasks:
+    - name: Перезапуск Keepalived
+      ansible.builtin.shell: systemctl restart keepalived
+

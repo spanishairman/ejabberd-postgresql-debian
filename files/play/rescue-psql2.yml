@@ -1,0 +1,111 @@
+---
+- name: Rescue | r1server. Change ip-address for ens7. Add rule. Install and configure ejabberd
+  hosts: r1server
+  become: true
+  tasks:
+    - name: r1server. Down iface. Set new ip-address. Up iface
+      ansible.builtin.shell: |
+        ifdown ens6
+        ifdown ens7
+        sed -i '/iface ens7/{n;s/address 192\.168\.1\..*/address 192.168.1.11/}' /etc/network/interfaces
+        ifup ens7
+        hostnamectl set-hostname psql2server
+        sed -i 's/r1server/psql2server/' /etc/hosts
+        sed -i 's/r1server/psql2server/' /etc/hosts
+        echo '192.168.1.11 psql2server.domain.local psql2server' >> /etc/hosts
+        iptables -A INPUT -s 192.168.1.0/28 -m tcp -m multiport -p tcp --dports 5432,9102,9187 -j ACCEPT
+        netfilter-persistent save
+        ip route add 192.168.1.0/29 via 192.168.1.9
+        ip route save > /etc/my-routes
+        echo 'up ip route restore < /etc/my-routes' >> /etc/network/interfaces
+      args:
+        executable: /bin/bash
+
+- name: Rescue | r1server. Install and configure postgresql
+  hosts: r1server
+  become: true
+  tasks:
+    - name: APT. Add Backports repository into sources list
+      ansible.builtin.apt_repository:
+        repo: deb http://deb.debian.org/debian bookworm-backports main contrib non-free
+        state: present
+    - name: APT. Update the repository cache and install packages "postgresqql", "python3-psycopg2", "acl", "nfs-common" to latest version using default release bookworm-backport
+      ansible.builtin.apt:
+        name: postgresql,python3-psycopg2,acl,nfs-common
+        state: present
+        default_release: bookworm-backports
+        update_cache: true
+    - name: Config. Edit pg_hba configuration file. Add e1server access. Открываем доступ с первой ноды Jabber-сервера к базе ejabberd-domain-local для пользователя ejabberd.
+      postgresql_pg_hba:
+        dest: /etc/postgresql/15/main/pg_hba.conf
+        contype: host
+        users: ejabberd
+        source: 192.168.1.2
+        databases: ejabberd-domain-local
+        method: scram-sha-256
+        create: true
+    - name: Config. Edit pg_hba configuration file. Add e2server access. Открываем доступ со второй ноды Jabber-сервера к базе ejabberd-domain-local для пользователя ejabberd.
+      postgresql_pg_hba:
+        dest: /etc/postgresql/15/main/pg_hba.conf
+        contype: host
+        users: ejabberd
+        source: 192.168.1.3
+        databases: ejabberd-domain-local
+        method: scram-sha-256
+        create: true
+    - name: Config. Bash. Edit postgresql.conf for enable all interfaces. Разрешаем входящие подключения к порту 5432 на всех интерфейсах.
+      ansible.builtin.shell: |
+        echo "listen_addresses = '*'" >> postgresql.conf
+        systemctl restart postgresql
+      args:
+        executable: /bin/bash
+        chdir: /etc/postgresql/15/main/
+
+- name: Rescue | r1server as Secondary Server. Configuration a Replica server and start replication.
+  hosts: r1server
+  become: true
+  tasks:
+    - name: Config. Edit pg_hba configuration file. Access for Replica from psql1server. Разрешаем удалённое подключение пользователю replica_role для получения wal принимающим сервером.
+      postgresql_pg_hba:
+        dest: /etc/postgresql/15/main/pg_hba.conf
+        contype: host
+        users: replica_role
+        source: 192.168.1.10
+        databases: replication
+        method: scram-sha-256
+        create: true
+    - name: Bash. Create nfs dir.
+      ansible.builtin.shell: |
+        test ! -d /mnt/nfs && mkdir -p $_
+        echo "192.168.1.12:/srv/share/upload/ /mnt/nfs nfs vers=3,noauto,x-systemd.automount 0 0" >> /etc/fstab
+        systemctl daemon-reload
+        systemctl restart remote-fs.target
+      args:
+        executable: /bin/bash
+    - name: Config. Bash. Edit postgresql.conf configuration file.
+      ansible.builtin.shell: |
+        sed -i 's/#wal_level = replica/wal_level = replica/' postgresql.conf
+        sed -i 's/#max_wal_senders = 10/#max_wal_senders = 10/' postgresql.conf
+        sed -i 's/#max_replication_slots = 10/max_replication_slots = 10/' postgresql.conf
+        sed -i 's/#wal_keep_size = 0/wal_keep_size = 100/' postgresql.conf
+        sed -i 's/#max_slot_wal_keep_size = -1/max_slot_wal_keep_size = -1/' postgresql.conf
+        sed -i 's/#wal_sender_timeout = 60s/wal_sender_timeout = 60s/' postgresql.conf
+        sed -i 's/#track_commit_timestamp = off/track_commit_timestamp = off/' postgresql.conf
+        sed -i 's/#archive_mode = off/archive_mode = on/' postgresql.conf
+        echo '# Archive and restore commsnfs' >> postgresql.conf
+        echo "archive_command = 'test ! -f /mnt/nfs/psql2server/archive/%f && cp %p /mnt/nfs/psql2server/archive/%f'" >> postgresql.conf
+        echo "restore_command = 'cp /mnt/nfs/psql2server/archive/%f %p'" >> postgresql.conf
+      args:
+        executable: /bin/bash
+        chdir: /etc/postgresql/15/main/
+    - name: Config. Bash. Stop postgresql service, remove work directory. Set PGPASSWORD variable, start replication.
+      ansible.builtin.shell: |
+        systemctl stop postgresql
+        rm -rf /var/lib/postgresql/15/main
+        PGPASSWORD=P@ssw0rd
+        export PGPASSWORD
+        pg_basebackup -h 192.168.1.10 -U replica_role -X stream -R -P -D /var/lib/postgresql/15/main
+        chown -R postgres: /var/lib/postgresql/15/main
+        systemctl start postgresql
+      args:
+        executable: /bin/bash

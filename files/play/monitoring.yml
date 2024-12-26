@@ -1,0 +1,29 @@
+---
+- name: Grafana | Install Grafana
+  hosts: monserver
+  become: true
+  tasks:
+    - name: Grafana. Install. Enable and start of service
+      ansible.builtin.shell: |
+        dpkg -i grafana_11.4.0_amd64.deb
+        systemctl daemon-reload
+        systemctl enable grafana-server
+        systemctl start grafana-server
+      args:
+        executable: /bin/bash
+        chdir: /home/vagrant/
+- name: Grafana | Configure Grafana
+  hosts: monserver
+  become: true
+  tasks:
+    - name: Grafana. Configure. Enable and start of service
+      ansible.builtin.shell: |
+        cp /home/vagrant/mon1server.pem /etc/grafana/mon1server.pem
+        chown grafana:grafana /etc/grafana/mon1server.pem
+        sed -i "s/;protocol = http/protocol = https/" /etc/grafana/grafana.ini
+        sed -i "s/;domain = localhost/domain = grafana.domain.local/" /etc/grafana/grafana.ini
+        sed -i "s/;cert_file =/cert_file = \\/etc\\/grafana\\/mon1server.pem/" /etc/grafana/grafana.ini
+        sed -i "s/;cert_key =/cert_key = \\/etc\\/grafana\\/mon1server.pem/" /etc/grafana/grafana.ini
+        systemctl restart grafana-server.service
+      args:
+        executable: /bin/bash

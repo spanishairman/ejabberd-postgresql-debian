@@ -1,0 +1,602 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+# All Vagrant configuration is done below. The "2" in Vagrant.configure
+# configures the configuration version (we support older styles for
+# backwards compatibility). Please don't change it unless you know what
+# you're doing.
+Vagrant.configure("2") do |config|
+  config.vm.define "Debian12-eJabberd1" do |e1server|
+  e1server.vm.box = "/home/max/vagrant/images/debian12"
+  e1server.vm.network :private_network,
+       :type => 'ip',
+       :libvirt__forward_mode => 'veryisolated',
+       :libvirt__dhcp_enabled => false,
+       :ip => '192.168.1.2',
+       :libvirt__netmask => '255.255.255.248',
+       :libvirt__network_name => 'vagrant-libvirt-inet1',
+       :libvirt__always_destroy => false
+  e1server.vm.provider "libvirt" do |lvirt|
+      lvirt.memory = "1024"
+      lvirt.cpus = "1"
+      lvirt.title = "Debian12-e1Server"
+      lvirt.description = "Виртуальная машина на базе дистрибутива Debian Linux. e1Server"
+      lvirt.management_network_name = "vagrant-libvirt-mgmt"
+      lvirt.management_network_address = "192.168.121.0/24"
+      lvirt.management_network_keep = "true"
+      lvirt.management_network_mac = "52:54:00:27:28:83"
+  end
+  e1server.vm.provision "file", source: "ca/e1server.pem", destination: "~/e1server.pem"
+  e1server.vm.provision "file", source: "bacula/e1/bacula-fd.conf", destination: "~/bacula-fd.conf"
+  e1server.vm.provision "shell", inline: <<-SHELL
+      brd='*************************************************************'
+      echo "$brd"
+      echo 'Set Hostname'
+      hostnamectl set-hostname e1server
+      echo "$brd"
+      sed -i 's/debian12/e1server/' /etc/hosts
+      sed -i 's/debian12/e1server/' /etc/hosts
+      echo '192.168.1.2 e1server.domain.local e1server' >> /etc/hosts
+      echo '192.168.1.3 e2server.domain.local e2server' >> /etc/hosts
+      echo '192.168.1.4 e3server.domain.local e3server' >> /etc/hosts
+      echo '192.168.1.10 psql1server.domain.local psql1server' >> /etc/hosts
+      echo '192.168.1.11 psql2server.domain.local psql2server' >> /etc/hosts
+      echo '192.168.1.13 mon1server.domain.local mon1server' >> /etc/hosts
+      echo "$brd"
+      echo 'Изменим ttl для работы через раздающий телефон'
+      echo "$brd"
+      sysctl -w net.ipv4.ip_default_ttl=66
+      echo "$brd"
+      echo 'Если ранее не были установлены, то установим необходимые  пакеты'
+      echo "$brd"
+      export DEBIAN_FRONTEND=noninteractive
+      apt update
+      apt install -y iptables iptables-persistent
+      # Политика по умолчанию для цепочки INPUT - DROP
+      iptables -P INPUT DROP
+      # Политика по умолчанию для цепочки OUTPUT - DROP
+      iptables -P OUTPUT DROP
+      # Политика по умолчанию для цепочки FORWARD - DROP
+      iptables -P FORWARD DROP
+      # Базовый набор правил: разрешаем локалхост, запрещаем доступ к адресу сети обратной петли не от локалхоста, разрешаем входящие пакеты со статусом установленного сонединения.
+      iptables -A INPUT -i lo -j ACCEPT
+      iptables -A INPUT ! -i lo -d 127.0.0.0/8 -j REJECT
+      iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+      # Открываем исходящие
+      iptables -A OUTPUT -j ACCEPT
+      # Разрешим входящие с хоста управления.
+      iptables -A INPUT -s 192.168.121.1 -m tcp -m multiport -p tcp --dports 22,5280 -j ACCEPT
+      # Также, разрешим входящие для vrrp и e2server
+      iptables -A INPUT -s 192.168.1.0/29 -m tcp -m multiport -p tcp --dports 5222,5223,5269,5443,5280,1883,4369,4200:4210 -j ACCEPT
+      iptables -A INPUT -s 192.168.1.0/28 -m tcp -m multiport -p tcp --dports 22,9100,9102 -j ACCEPT
+      iptables -A INPUT -p vrrp -d 224.0.0.18 -j ACCEPT
+      iptables -A INPUT -s 192.168.1.0/29 -m udp -m multiport -p udp --dports 514,3478 -j ACCEPT
+      # Откроем ICMP ping
+      iptables -A INPUT -p icmp -m icmp --icmp-type 8 -j ACCEPT
+      netfilter-persistent save
+      ip route add 192.168.1.8/29 via 192.168.1.1
+      ip route save > /etc/my-routes
+      echo 'up ip route restore < /etc/my-routes' >> /etc/network/interfaces
+      SHELL
+  end
+  config.vm.define "Debian12-eJabberd2" do |e2server|
+  e2server.vm.box = "/home/max/vagrant/images/debian12"
+  e2server.vm.network :private_network,
+       :type => 'ip',
+       :libvirt__forward_mode => 'veryisolated',
+       :libvirt__dhcp_enabled => false,
+       :ip => '192.168.1.3',
+       :libvirt__netmask => '255.255.255.248',
+       :libvirt__network_name => 'vagrant-libvirt-inet1',
+       :libvirt__always_destroy => false
+  e2server.vm.provider "libvirt" do |lvirt|
+      lvirt.memory = "1024"
+      lvirt.cpus = "1"
+      lvirt.title = "Debian12-e2Server"
+      lvirt.description = "Виртуальная машина на базе дистрибутива Debian Linux. e2Server"
+      lvirt.management_network_name = "vagrant-libvirt-mgmt"
+      lvirt.management_network_address = "192.168.121.0/24" 
+      lvirt.management_network_keep = "true"
+      lvirt.management_network_mac = "52:54:00:27:28:84"
+  end
+  e2server.vm.provision "file", source: "ca/e2server.pem", destination: "~/e2server.pem"
+  e2server.vm.provision "file", source: "bacula/e2/bacula-fd.conf", destination: "~/bacula-fd.conf"
+  e2server.vm.provision "shell", inline: <<-SHELL
+      brd='*************************************************************'
+      echo "$brd"
+      echo 'Set Hostname'  
+      hostnamectl set-hostname e2server
+      echo "$brd"
+      sed -i 's/debian12/e2server/' /etc/hosts
+      sed -i 's/debian12/e2server/' /etc/hosts
+      echo '192.168.1.2 e1server.domain.local e1server' >> /etc/hosts
+      echo '192.168.1.3 e2server.domain.local e2server' >> /etc/hosts
+      echo '192.168.1.4 e3server.domain.local e3server' >> /etc/hosts
+      echo '192.168.1.10 psql1server.domain.local psql1server' >> /etc/hosts
+      echo '192.168.1.11 psql2server.domain.local psql2server' >> /etc/hosts
+      echo '192.168.1.13 mon1server.domain.local mon1server' >> /etc/hosts
+      echo "$brd"
+      echo 'Изменим ttl для работы через раздающий телефон'
+      echo "$brd"
+      sysctl -w net.ipv4.ip_default_ttl=66
+      echo "$brd"
+      echo 'Если ранее не были установлены, то установим необходимые  пакеты'
+      echo "$brd"
+      export DEBIAN_FRONTEND=noninteractive
+      apt update
+      apt install -y iptables iptables-persistent
+      # Политика по умолчанию для цепочки INPUT - DROP
+      iptables -P INPUT DROP
+      # Политика по умолчанию для цепочки OUTPUT - DROP
+      iptables -P OUTPUT DROP
+      # Политика по умолчанию для цепочки FORWARD - DROP
+      iptables -P FORWARD DROP
+      # Базовый набор правил: разрешаем локалхост, запрещаем доступ к адресу сети обратной петли не от локалхоста, разрешаем входящие пакеты со статусом установленного сонединения.
+      iptables -A INPUT -i lo -j ACCEPT
+      iptables -A INPUT ! -i lo -d 127.0.0.0/8 -j REJECT
+      iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+      # Открываем исходящие
+      iptables -A OUTPUT -j ACCEPT
+      # Разрешим входящие с хоста управления.
+      iptables -A INPUT -s 192.168.121.1 -m tcp -m multiport -p tcp --dports 22,5280 -j ACCEPT
+      # Также, разрешим входящие для vrrp и e1server
+      iptables -A INPUT -s 192.168.1.0/29 -m tcp -m multiport -p tcp --dports 5222,5223,5269,5443,5280,1883,4369,4200:4210 -j ACCEPT
+      iptables -A INPUT -s 192.168.1.0/28 -m tcp -m multiport -p tcp --dports 22,9100,9102 -j ACCEPT
+      iptables -A INPUT -p vrrp -d 224.0.0.18 -j ACCEPT
+      iptables -A INPUT -s 192.168.1.0/29 -m udp -m multiport -p udp --dports 514,3478 -j ACCEPT
+      # Откроем ICMP ping
+      iptables -A INPUT -p icmp -m icmp --icmp-type 8 -j ACCEPT
+      netfilter-persistent save 
+      ip route add 192.168.1.8/29 via 192.168.1.1
+      ip route save > /etc/my-routes
+      echo 'up ip route restore < /etc/my-routes' >> /etc/network/interfaces
+      SHELL
+  end
+  config.vm.define "Debian12-psql1" do |psql1server|
+  psql1server.vm.box = "/home/max/vagrant/images/debian12"
+  psql1server.vm.network :private_network,
+       :type => 'ip',
+       :libvirt__forward_mode => 'veryisolated',
+       :libvirt__dhcp_enabled => false,
+       :ip => '192.168.1.10',
+       :libvirt__netmask => '255.255.255.248',
+       :libvirt__network_name => 'vagrant-libvirt-srv1',
+       :libvirt__always_destroy => false
+  psql1server.vm.provider "libvirt" do |lvirt|
+      lvirt.memory = "1024"
+      lvirt.cpus = "1"
+      lvirt.title = "Debian12-psql1Server"
+      lvirt.description = "Виртуальная машина на базе дистрибутива Debian Linux. psql1Server"
+      lvirt.management_network_name = "vagrant-libvirt-mgmt"
+      lvirt.management_network_address = "192.168.121.0/24"
+      lvirt.management_network_keep = "true"
+      lvirt.management_network_mac = "52:54:00:27:28:85"
+  end
+  psql1server.vm.provision "file", source: "bacula/psql1/bacula-fd.conf", destination: "~/bacula-fd.conf"
+  psql1server.vm.provision "file", source: "prometheus/prometheus-post.sql", destination: "~/prometheus-post.sql"
+  psql1server.vm.provision "file", source: "prometheus/prometheus-postgres-exporter", destination: "~/prometheus-postgres-exporter"
+  psql1server.vm.provision "shell", inline: <<-SHELL
+      brd='*************************************************************'
+      echo "$brd"
+      echo 'Set Hostname'
+      hostnamectl set-hostname psql1server
+      echo "$brd"
+      sed -i 's/debian12/psql1server/' /etc/hosts
+      sed -i 's/debian12/psql1server/' /etc/hosts
+      echo '192.168.1.2 e1server.domain.local e1server' >> /etc/hosts
+      echo '192.168.1.3 e2server.domain.local e2server' >> /etc/hosts
+      echo '192.168.1.4 e3server.domain.local e3server' >> /etc/hosts
+      echo '192.168.1.10 psql1server.domain.local psql1server' >> /etc/hosts
+      echo '192.168.1.11 psql2server.domain.local psql2server' >> /etc/hosts
+      echo '192.168.1.13 mon1server.domain.local mon1server' >> /etc/hosts
+      echo "$brd"
+      echo 'Изменим ttl для работы через раздающий телефон'
+      echo "$brd"
+      sysctl -w net.ipv4.ip_default_ttl=66
+      echo "$brd"
+      echo 'Если ранее не были установлены, то установим необходимые  пакеты'
+      echo "$brd"
+      export DEBIAN_FRONTEND=noninteractive
+      apt update
+      apt install -y iptables iptables-persistent
+      # Политика по умолчанию для цепочки INPUT - DROP
+      iptables -P INPUT DROP
+      # Политика по умолчанию для цепочки OUTPUT - DROP
+      iptables -P OUTPUT DROP
+      # Политика по умолчанию для цепочки FORWARD - DROP
+      iptables -P FORWARD DROP
+      # Базовый набор правил: разрешаем локалхост, запрещаем доступ к адресу сети обратной петли не от локалхоста, разрешаем входящие пакеты со статусом установленного сонединения.
+      iptables -A INPUT -i lo -j ACCEPT
+      iptables -A INPUT ! -i lo -d 127.0.0.0/8 -j REJECT
+      iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+      # Открываем исходящие
+      iptables -A OUTPUT -j ACCEPT
+      # Разрешим входящие с хоста управления.
+      iptables -A INPUT -s 192.168.121.1 -m tcp -m multiport -p tcp --dports 22 -j ACCEPT
+      # Также, разрешим входящие для e2server
+      iptables -A INPUT -s 192.168.1.0/28 -m tcp -m multiport -p tcp --dports 22,5432,9100,9102,9187 -j ACCEPT
+      # iptables -A INPUT -s 192.168.1.0/29 -m udp -p udp --dport 514 -j ACCEPT
+      # Откроем ICMP ping
+      iptables -A INPUT -p icmp -m icmp --icmp-type 8 -j ACCEPT
+      netfilter-persistent save
+      ip route add 192.168.1.0/29 via 192.168.1.9
+      ip route save > /etc/my-routes
+      echo 'up ip route restore < /etc/my-routes' >> /etc/network/interfaces
+      SHELL
+  end
+  config.vm.define "Debian12-psql2" do |psql2server|
+  psql2server.vm.box = "/home/max/vagrant/images/debian12"
+  psql2server.vm.network :private_network,
+       :type => 'ip',
+       :libvirt__forward_mode => 'veryisolated',
+       :libvirt__dhcp_enabled => false,
+       :ip => '192.168.1.11',
+       :libvirt__netmask => '255.255.255.248',
+       :libvirt__network_name => 'vagrant-libvirt-srv1',
+       :libvirt__always_destroy => false
+  psql2server.vm.provider "libvirt" do |lvirt|
+      lvirt.memory = "1024"
+      lvirt.cpus = "1"    
+      lvirt.title = "Debian12-psql2Server"
+      lvirt.description = "Виртуальная машина на базе дистрибутива Debian Linux. psql2Server"
+      lvirt.management_network_name = "vagrant-libvirt-mgmt"
+      lvirt.management_network_address = "192.168.121.0/24"
+      lvirt.management_network_keep = "true"
+      lvirt.management_network_mac = "52:54:00:27:28:86"
+  end 
+  psql2server.vm.provision "file", source: "bacula/psql2/bacula-fd.conf", destination: "~/bacula-fd.conf"
+  psql2server.vm.provision "file", source: "bacula/psql2/bacula-before-dump.sh", destination: "~/bacula-before-dump.sh"
+  psql2server.vm.provision "file", source: "bacula/psql2/bacula-after-dump.sh", destination: "~/bacula-after-dump.sh"
+  psql2server.vm.provision "file", source: "prometheus/prometheus-post.sql", destination: "~/prometheus-post.sql"
+  psql2server.vm.provision "file", source: "prometheus/prometheus-postgres-exporter", destination: "~/prometheus-postgres-exporter"
+  psql2server.vm.provision "shell", inline: <<-SHELL
+      brd='*************************************************************'
+      echo "$brd"
+      echo 'Set Hostname' 
+      hostnamectl set-hostname psql2server
+      echo "$brd"
+      sed -i 's/debian12/psql2server/' /etc/hosts
+      sed -i 's/debian12/psql2server/' /etc/hosts
+      echo '192.168.1.2 e1server.domain.local e1server' >> /etc/hosts
+      echo '192.168.1.3 e2server.domain.local e2server' >> /etc/hosts
+      echo '192.168.1.4 e3server.domain.local e3server' >> /etc/hosts
+      echo '192.168.1.10 psql1server.domain.local psql1server' >> /etc/hosts
+      echo '192.168.1.11 psql2server.domain.local psql2server' >> /etc/hosts
+      echo '192.168.1.13 mon1server.domain.local mon1server' >> /etc/hosts
+      echo "$brd"
+      echo 'Изменим ttl для работы через раздающий телефон'
+      echo "$brd"
+      sysctl -w net.ipv4.ip_default_ttl=66
+      echo "$brd"
+      echo 'Если ранее не были установлены, то установим необходимые  пакеты'
+      echo "$brd"
+      export DEBIAN_FRONTEND=noninteractive
+      apt update
+      apt install -y iptables iptables-persistent
+      # Политика по умолчанию для цепочки INPUT - DROP
+      iptables -P INPUT DROP
+      # Политика по умолчанию для цепочки OUTPUT - DROP
+      iptables -P OUTPUT DROP
+      # Политика по умолчанию для цепочки FORWARD - DROP
+      iptables -P FORWARD DROP
+      # Базовый набор правил: разрешаем локалхост, запрещаем доступ к адресу сети обратной петли не от локалхоста, разрешаем входящие пакеты со статусом установленного сонединения.
+      iptables -A INPUT -i lo -j ACCEPT
+      iptables -A INPUT ! -i lo -d 127.0.0.0/8 -j REJECT
+      iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+      # Открываем исходящие
+      iptables -A OUTPUT -j ACCEPT
+      # Разрешим входящие с хоста управления.
+      iptables -A INPUT -s 192.168.121.1 -m tcp -m multiport -p tcp --dports 22 -j ACCEPT
+      # Также, разрешим входящие для e2server
+      iptables -A INPUT -s 192.168.1.0/28 -m tcp -m multiport -p tcp --dports 22,5432,9100,9102,9187 -j ACCEPT
+      # iptables -A INPUT -s 192.168.1.0/29 -m udp -p udp --dport 514 -j ACCEPT
+      # Откроем ICMP ping
+      iptables -A INPUT -p icmp -m icmp --icmp-type 8 -j ACCEPT
+      netfilter-persistent save
+      ip route add 192.168.1.0/29 via 192.168.1.9
+      ip route save > /etc/my-routes
+      echo 'up ip route restore < /etc/my-routes' >> /etc/network/interfaces
+      SHELL
+  end
+  config.vm.define "Debian12-gw1" do |gw1server|
+  gw1server.vm.box = "/home/max/vagrant/images/debian12"
+  gw1server.vm.network :private_network,
+       :type => 'ip',
+       :libvirt__forward_mode => 'veryisolated',
+       :libvirt__dhcp_enabled => false,
+       :ip => '192.168.1.1',
+       :libvirt__netmask => '255.255.255.248',
+       :libvirt__network_name => 'vagrant-libvirt-inet1',
+       :libvirt__always_destroy => false
+  gw1server.vm.network :private_network,
+       :type => 'ip',
+       :libvirt__forward_mode => 'veryisolated',
+       :libvirt__dhcp_enabled => false,  
+       :ip => '192.168.1.9',
+       :libvirt__netmask => '255.255.255.248',
+       :libvirt__network_name => 'vagrant-libvirt-srv1',
+       :libvirt__always_destroy => false
+  gw1server.vm.provider "libvirt" do |lvirt|
+      lvirt.memory = "1024"
+      lvirt.cpus = "1"     
+      lvirt.title = "Debian12-gw1Server"  
+      lvirt.description = "Виртуальная машина на базе дистрибутива Debian Linux. gw1Server"
+      lvirt.management_network_name = "vagrant-libvirt-mgmt"
+      lvirt.management_network_address = "192.168.121.0/24"
+      lvirt.management_network_keep = "true" 
+      lvirt.management_network_mac = "52:54:00:27:28:87"
+  end 
+  gw1server.vm.provision "shell", inline: <<-SHELL
+      brd='*************************************************************'
+      echo "$brd"
+      echo 'Set Hostname' 
+      hostnamectl set-hostname gw1server
+      echo "$brd"
+      sed -i 's/debian12/gw1server/' /etc/hosts
+      sed -i 's/debian12/gw1server/' /etc/hosts
+      echo '192.168.1.2 e1server.domain.local e1server' >> /etc/hosts
+      echo '192.168.1.3 e2server.domain.local e2server' >> /etc/hosts
+      echo '192.168.1.4 e3server.domain.local e3server' >> /etc/hosts
+      echo '192.168.1.10 psql1server.domain.local psql1server' >> /etc/hosts
+      echo '192.168.1.11 psql2server.domain.local psql2server' >> /etc/hosts
+      echo "$brd"
+      echo 'Изменим ttl для работы через раздающий телефон'
+      echo "$brd"
+      sysctl -w net.ipv4.ip_default_ttl=66
+      echo "$brd"
+      echo 'Если ранее не были установлены, то установим необходимые  пакеты'
+      echo "$brd"
+      export DEBIAN_FRONTEND=noninteractive
+      apt update
+      apt install -y iptables iptables-persistent
+      # Политика по умолчанию для цепочки INPUT - DROP
+      iptables -P INPUT DROP
+      # Политика по умолчанию для цепочки OUTPUT - DROP
+      iptables -P OUTPUT DROP
+      # Политика по умолчанию для цепочки FORWARD - DROP
+      iptables -P FORWARD DROP
+      # Базовый набор правил: разрешаем локалхост, запрещаем доступ к адресу сети обратной петли не от локалхоста, разрешаем входящие пакеты со статусом установленного сонединения.
+      iptables -A INPUT -i lo -j ACCEPT
+      iptables -A INPUT ! -i lo -d 127.0.0.0/8 -j REJECT
+      iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+      # Разрешим транзит трафика.
+      iptables -A FORWARD -j ACCEPT
+      # Открываем исходящие
+      iptables -A OUTPUT -j ACCEPT
+      # Разрешим входящие с хоста управления.
+      iptables -A INPUT -s 192.168.121.1 -m tcp -p tcp --dport 22 -j ACCEPT
+      # Также, разрешим входящие для виртуальных хостов по ssh и для серверов баз данных во всём диапазоне tcp
+      iptables -A INPUT -s 192.168.1.0/28 -m multiport -m tcp -p tcp --dports 22,9100 -j ACCEPT
+      # Откроем ICMP ping
+      iptables -A INPUT -p icmp -m icmp --icmp-type 8 -j ACCEPT
+      netfilter-persistent save
+      echo "net.ipv4.conf.all.forwarding = 1" >> /etc/sysctl.conf
+      sysctl -p
+      SHELL
+  end
+  config.vm.define "Debian12-bk1" do |bk1server|
+  bk1server.vm.box = "/home/max/vagrant/images/debian12"
+  bk1server.vm.network :private_network,
+       :type => 'ip',
+       :libvirt__forward_mode => 'veryisolated',
+       :libvirt__dhcp_enabled => false,
+       :ip => '192.168.1.12',
+       :libvirt__netmask => '255.255.255.248',
+       :libvirt__network_name => 'vagrant-libvirt-srv1',
+       :libvirt__always_destroy => false
+  bk1server.vm.provider "libvirt" do |lvirt|
+      lvirt.memory = "1024"
+      lvirt.cpus = "1"
+      lvirt.title = "Debian12-bk1Server"
+      lvirt.description = "Виртуальная машина на базе дистрибутива Debian Linux. bk1Server"
+      lvirt.management_network_name = "vagrant-libvirt-mgmt"
+      lvirt.management_network_address = "192.168.121.0/24"
+      lvirt.management_network_keep = "true"
+      lvirt.management_network_mac = "52:54:00:27:28:88"
+  end
+    bk1server.vm.provision "file", source: "bacula/srv1/bacula-dir-jobs.conf", destination: "~/bacula-dir-jobs.conf"
+    bk1server.vm.provision "file", source: "bacula/srv1/bacula-dir-filesets.conf", destination: "~/bacula-dir-filesets.conf"
+    bk1server.vm.provision "file", source: "bacula/srv1/bacula-dir-schedules.conf", destination: "~/bacula-dir-schedules.conf"
+    bk1server.vm.provision "file", source: "bacula/srv1/bacula-dir-clients.conf", destination: "~/bacula-dir-clients.conf"
+    bk1server.vm.provision "file", source: "bacula/srv1/bacula-dir-storage.conf", destination: "~/bacula-dir-storage.conf"
+    bk1server.vm.provision "file", source: "bacula/srv1/bacula-dir-pools.conf", destination: "~/bacula-dir-pools.conf"
+    bk1server.vm.provision "file", source: "bacula/srv1/bacula-sd.conf", destination: "~/bacula-sd.conf"
+  bk1server.vm.provision "shell", inline: <<-SHELL
+      brd='*************************************************************'
+      echo "$brd"
+      echo 'Set Hostname'
+      hostnamectl set-hostname bk1server
+      echo "$brd"
+      sed -i 's/debian12/bk1server/' /etc/hosts
+      sed -i 's/debian12/bk1server/' /etc/hosts
+      echo '192.168.1.2 e1server.domain.local e1server' >> /etc/hosts
+      echo '192.168.1.3 e2server.domain.local e2server' >> /etc/hosts
+      echo '192.168.1.4 e3server.domain.local e3server' >> /etc/hosts
+      echo '192.168.1.10 psql1server.domain.local psql1server' >> /etc/hosts
+      echo '192.168.1.11 psql2server.domain.local psql2server' >> /etc/hosts
+      echo "$brd"
+      echo 'Изменим ttl для работы через раздающий телефон'
+      echo "$brd"
+      sysctl -w net.ipv4.ip_default_ttl=66
+      echo "$brd"
+      echo 'Если ранее не были установлены, то установим необходимые  пакеты'
+      echo "$brd"
+      export DEBIAN_FRONTEND=noninteractive
+      apt update
+      apt install -y iptables iptables-persistent
+      # Политика по умолчанию для цепочки INPUT - DROP
+      iptables -P INPUT DROP
+      # Политика по умолчанию для цепочки OUTPUT - DROP
+      iptables -P OUTPUT DROP
+      # Политика по умолчанию для цепочки FORWARD - DROP
+      iptables -P FORWARD DROP
+      # Базовый набор правил: разрешаем локалхост, запрещаем доступ к адресу сети обратной петли не от локалхоста, разрешаем входящие пакеты со статусом установленного сонединения.
+      iptables -A INPUT -i lo -j ACCEPT
+      iptables -A INPUT ! -i lo -d 127.0.0.0/8 -j REJECT
+      iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+      # Разрешим транзит трафика.
+      iptables -A FORWARD -j ACCEPT
+      # Открываем исходящие
+      iptables -A OUTPUT -j ACCEPT
+      # Разрешим входящие с хоста управления.
+      iptables -A INPUT -s 192.168.121.1 -m tcp -p tcp --dport 22 -j ACCEPT
+      # Также, разрешим входящие для виртуальных хостов по ssh, а также подключение к Storage Daemon
+      iptables -A INPUT -s 192.168.1.0/29 -m tcp -m multiport -p tcp --dports 22,9103 -j ACCEPT
+      iptables -A INPUT -s 192.168.1.8/29 -m tcp -p tcp -j ACCEPT
+      # Откроем ICMP ping
+      iptables -A INPUT -p icmp -m icmp --icmp-type 8 -j ACCEPT
+      netfilter-persistent save
+      SHELL
+  end
+  config.vm.define "Debian12-mon1" do |mon1server|
+  mon1server.vm.box = "/home/max/vagrant/images/debian12"
+  mon1server.vm.network :private_network,
+       :type => 'ip',
+       :libvirt__forward_mode => 'veryisolated',
+       :libvirt__dhcp_enabled => false,
+       :ip => '192.168.1.13',
+       :libvirt__netmask => '255.255.255.248',
+       :libvirt__network_name => 'vagrant-libvirt-srv1',
+       :libvirt__always_destroy => false
+  mon1server.vm.provider "libvirt" do |lvirt|
+      lvirt.memory = "1024"
+      lvirt.cpus = "1"
+      lvirt.title = "Debian12-mon1Server"
+      lvirt.description = "Виртуальная машина на базе дистрибутива Debian Linux. mon1Server"
+      lvirt.management_network_name = "vagrant-libvirt-mgmt"
+      lvirt.management_network_address = "192.168.121.0/24"
+      lvirt.management_network_keep = "true"
+      lvirt.management_network_mac = "52:54:00:27:28:89"
+  end
+  mon1server.vm.provision "file", source: "grafana/grafana_11.4.0_amd64.deb", destination: "~/grafana_11.4.0_amd64.deb"
+  mon1server.vm.provision "file", source: "grafana/grafana.tar", destination: "~/grafana.tar"
+  mon1server.vm.provision "file", source: "grafana/prometheus.tar", destination: "~/prometheus.tar"
+  mon1server.vm.provision "file", source: "ca/mon1server.pem", destination: "~/mon1server.pem"
+  mon1server.vm.provision "file", source: "bacula/mon1/bacula-fd.conf", destination: "~/bacula-fd.conf"
+  mon1server.vm.provision "file", source: "bacula/mon1/bacula-before-dump.sh", destination: "~/bacula-before-dump.sh"
+  mon1server.vm.provision "file", source: "bacula/mon1/bacula-after-dump.sh", destination: "~/bacula-after-dump.sh"
+  mon1server.vm.provision "shell", inline: <<-SHELL
+      brd='*************************************************************'
+      echo "$brd"
+      echo 'Set Hostname'
+      hostnamectl set-hostname mon1server
+      echo "$brd"
+      sed -i 's/debian12/mon1server/' /etc/hosts
+      sed -i 's/debian12/mon1server/' /etc/hosts
+      echo '192.168.1.2 e1server.domain.local e1server' >> /etc/hosts
+      echo '192.168.1.3 e2server.domain.local e2server' >> /etc/hosts
+      echo '192.168.1.10 psql1server.domain.local psql1server' >> /etc/hosts
+      echo '192.168.1.11 psql2server.domain.local psql2server' >> /etc/hosts
+      echo '192.168.1.13 mon1server.domain.local mon1server' >> /etc/hosts
+      echo '192.168.121.16 grafana.domain.local grafana' >> /etc/hosts
+      echo "$brd"
+      echo 'Изменим ttl для работы через раздающий телефон'
+      echo "$brd"
+      sysctl -w net.ipv4.ip_default_ttl=66
+      echo "$brd"
+      echo 'Если ранее не были установлены, то установим необходимые  пакеты'
+      echo "$brd"
+      export DEBIAN_FRONTEND=noninteractive
+      apt update
+      apt install -y iptables iptables-persistent
+      # Политика по умолчанию для цепочки INPUT - DROP
+      iptables -P INPUT DROP
+      # Политика по умолчанию для цепочки OUTPUT - DROP
+      iptables -P OUTPUT DROP 
+      # Политика по умолчанию для цепочки FORWARD - DROP
+      iptables -P FORWARD DROP
+      # Базовый набор правил: разрешаем локалхост, запрещаем доступ к адресу сети обратной петли не от локалхоста, разрешаем входящие пакеты со статусом установленного сонединения.
+      iptables -A INPUT -i lo -j ACCEPT
+      iptables -A INPUT ! -i lo -d 127.0.0.0/8 -j REJECT
+      iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+      # Разрешим транзит трафика.
+      iptables -A FORWARD -j ACCEPT
+      # Открываем исходящие
+      iptables -A OUTPUT -j ACCEPT
+      # Разрешим входящие с хоста управления.
+      iptables -A INPUT -s 192.168.121.1 -m tcp -m multiport -p tcp --dports 22,3000,9090 -j ACCEPT
+      # Также, разрешим входящие для виртуальных хостов по ssh, а также подключение к Storage Daemon
+      iptables -A INPUT -s 192.168.1.0/29 -m tcp -m multiport -p tcp --dports 22,9103 -j ACCEPT
+      iptables -A INPUT -s 192.168.1.8/29 -m tcp -p tcp -j ACCEPT
+      # Откроем ICMP ping
+      iptables -A INPUT -p icmp -m icmp --icmp-type 8 -j ACCEPT
+      netfilter-persistent save
+      SHELL
+  end
+  config.vm.define "Debian12-r1" do |r1server|
+  r1server.vm.box = "/home/max/vagrant/images/debian12"
+  r1server.vm.network :private_network,
+       :type => 'ip',
+       :libvirt__forward_mode => 'veryisolated',
+       :libvirt__dhcp_enabled => false,
+       :ip => '192.168.1.4',
+       :libvirt__netmask => '255.255.255.248',
+       :libvirt__network_name => 'vagrant-libvirt-inet1',
+       :libvirt__always_destroy => false
+  r1server.vm.network :private_network,
+       :type => 'ip',
+       :libvirt__forward_mode => 'veryisolated',
+       :libvirt__dhcp_enabled => false,
+       :ip => '192.168.1.17',
+       :libvirt__netmask => '255.255.255.248',
+       :libvirt__network_name => 'vagrant-libvirt-srv1',
+       :libvirt__always_destroy => false
+  r1server.vm.provider "libvirt" do |lvirt|
+      lvirt.memory = "1024"
+      lvirt.cpus = "1"
+      lvirt.title = "Debian12-r1Server"
+      lvirt.description = "Виртуальная машина на базе дистрибутива Debian Linux. r1Server"
+      lvirt.management_network_name = "vagrant-libvirt-mgmt"
+      lvirt.management_network_address = "192.168.121.0/24"
+      lvirt.management_network_keep = "true"
+      lvirt.management_network_mac = "52:54:00:27:28:90"
+  end
+  r1server.vm.provision "file", source: "ca/e3server.pem", destination: "~/e3server.pem"
+  r1server.vm.provision "shell", inline: <<-SHELL
+      brd='*************************************************************'
+      echo "$brd"
+      echo 'Set Hostname'
+      hostnamectl set-hostname r1server
+      echo "$brd"
+      sed -i 's/debian12/r1server/' /etc/hosts
+      sed -i 's/debian12/r1server/' /etc/hosts
+      echo '192.168.1.2 e1server.domain.local e1server' >> /etc/hosts
+      echo '192.168.1.3 e2server.domain.local e2server' >> /etc/hosts
+      echo '192.168.1.10 psql1server.domain.local psql1server' >> /etc/hosts
+      echo '192.168.1.11 psql2server.domain.local psql2server' >> /etc/hosts
+      echo "$brd"
+      echo 'Изменим ttl для работы через раздающий телефон'
+      echo "$brd"
+      sysctl -w net.ipv4.ip_default_ttl=66
+      echo "$brd"
+      echo 'Если ранее не были установлены, то установим необходимые  пакеты'
+      echo "$brd"
+      export DEBIAN_FRONTEND=noninteractive
+      apt update
+      apt install -y iptables iptables-persistent
+      # Политика по умолчанию для цепочки INPUT - DROP
+      iptables -P INPUT DROP
+      # Политика по умолчанию для цепочки OUTPUT - DROP
+      iptables -P OUTPUT DROP
+      # Политика по умолчанию для цепочки FORWARD - DROP
+      iptables -P FORWARD DROP
+      # Базовый набор правил: разрешаем локалхост, запрещаем доступ к адресу сети обратной петли не от локалхоста, разрешаем входящие пакеты со статусом установленного сонединения.
+      iptables -A INPUT -i lo -j ACCEPT
+      iptables -A INPUT ! -i lo -d 127.0.0.0/8 -j REJECT
+      iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+      # Разрешим транзит трафика.
+      iptables -A FORWARD -j ACCEPT
+      # Открываем исходящие
+      iptables -A OUTPUT -j ACCEPT
+      # Разрешим входящие с хоста управления.
+      iptables -A INPUT -s 192.168.121.1 -m tcp -p tcp --dport 22 -j ACCEPT
+      # Также, разрешим входящие для виртуальных хостов по ssh и для серверов баз данных во всём диапазоне tcp
+      iptables -A INPUT -s 192.168.1.0/28 -m multiport -m tcp -p tcp --dports 22,9100 -j ACCEPT
+      # Откроем ICMP ping
+      iptables -A INPUT -p icmp -m icmp --icmp-type 8 -j ACCEPT
+      netfilter-persistent save
+      echo "net.ipv4.conf.all.forwarding = 1" >> /etc/sysctl.conf
+      sysctl -p
+      SHELL
+  end
+end

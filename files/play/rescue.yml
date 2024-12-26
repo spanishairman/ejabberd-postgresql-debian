@@ -1,0 +1,232 @@
+---
+- name: Rescue | r1server. Change ip-address for ens6. Add rule. Install and configure ejabberd
+  hosts: r1server
+  become: true
+  tasks:
+    - name: r1server. Down iface. Set new ip-address. Up iface
+      ansible.builtin.shell: |
+        ifdown ens6
+        ifdown ens7
+        sed -i '/iface ens6/{n;s/address 192\.168\.1\..*/address 192.168.1.4/}' /etc/network/interfaces
+        ifup ens6
+        hostnamectl set-hostname e3server
+        sed -i 's/r1server/e3server/' /etc/hosts
+        sed -i 's/r1server/e3server/' /etc/hosts
+        echo '192.168.1.4 e3server.domain.local e1server' >> /etc/hosts
+        iptables -A INPUT -s 192.168.121.1 -m tcp -p tcp --dport 5280 -j ACCEPT
+        iptables -A INPUT -s 192.168.1.0/29 -m tcp -m multiport -p tcp --dports 5222,5223,5269,5443,5280,1883,4369,4200:4210 -j ACCEPT
+        iptables -A INPUT -s 192.168.1.0/28 -m tcp -m multiport -p tcp --dports 22,9100,9102 -j ACCEPT
+        iptables -A INPUT -p vrrp -d 224.0.0.18 -j ACCEPT
+        netfilter-persistent save
+        ip route add 192.168.1.8/29 via 192.168.1.1
+        ip route save > /etc/my-routes
+        echo 'up ip route restore < /etc/my-routes' >> /etc/network/interfaces
+      args:
+        executable: /bin/bash
+
+- name: Rescue | r1server. Install and configure ejabberd
+  hosts: r1server
+  become: true
+  tasks:
+    - name: APT. Add Backports repository into sources list
+      ansible.builtin.apt_repository:
+        repo: deb http://deb.debian.org/debian bookworm-backports main contrib non-free
+        state: present
+    - name: APT. Update the repository cache and install packages "eJabberd", "erlang-p1-pgsql", "python3-psycopg2", "acl" to latest version using default release bookworm-backport
+      ansible.builtin.apt:
+        name: ejabberd,erlang-p1-pgsql,python3-psycopg2,acl
+        state: present
+        default_release: bookworm-backports
+        update_cache: yes
+
+- name: PostgreSQL | Group of servers "psqlserver".
+  hosts: psqlserver
+  become: true
+  tasks:
+    - name: Config. Edit pg_hba configuration file. Add e3server access. Открываем доступ с третьей ноды Jabber-сервера к базе ejabberd-domain-local для пользователя ejabberd.
+      postgresql_pg_hba:
+        dest: /etc/postgresql/15/main/pg_hba.conf
+        contype: host
+        users: ejabberd
+        source: 192.168.1.4
+        databases: ejabberd-domain-local
+        method: scram-sha-256
+        create: true
+    - name: Config. Bash. Restart postgresql.service
+      ansible.builtin.shell: |
+        systemctl restart postgresql
+      args:
+        executable: /bin/bash
+
+- name: Rescue | r1server. Confgure for domainname and psql1server connect. Granting administrator account rights
+  hosts: r1server
+  become: true
+  tasks:
+    - name: Edit ejabberd.yml for domainname.
+      ansible.builtin.shell: |
+        sed -i 's/localhost/domain.local/' ejabberd.yml
+      args:
+        executable: /bin/bash
+        chdir: /etc/ejabberd/
+    - name: Edit ejabberd.yml for connection to remote db.
+      ansible.builtin.shell: |
+        echo ''  >> ejabberd.yml
+        echo '# Database settings' >> ejabberd.yml
+        echo 'host_config:' >> ejabberd.yml
+        echo '  domain.local:' >> ejabberd.yml
+        echo '    sql_type: pgsql' >> ejabberd.yml
+        echo '    sql_server: 192.168.1.10' >> ejabberd.yml
+        echo '    sql_database: ejabberd-domain-local' >> ejabberd.yml
+        echo '    sql_username: ejabberd' >> ejabberd.yml
+        echo '    sql_password: P@ssw0rd' >> ejabberd.yml
+        echo '    auth_method:' >> ejabberd.yml
+        echo '      - sql' >> ejabberd.yml
+      args:
+        executable: /bin/bash
+        chdir: /etc/ejabberd/
+    - name: Edit ejabberd.yml for granting administrator account rights.
+      ansible.builtin.shell: |
+        echo ''  >> ejabberd.yml
+        echo '    acl:' >> ejabberd.yml
+        echo '      admin:' >> ejabberd.yml
+        echo '        user: admin@domain.local' >> ejabberd.yml
+        echo ''  >> ejabberd.yml
+        echo '    access_rules:' >> ejabberd.yml
+        echo '      configure:' >> ejabberd.yml
+        echo '        allow: admin' >> ejabberd.yml
+        systemctl restart ejabberd.service
+      args:
+        executable: /bin/bash
+        chdir: /etc/ejabberd/
+
+- name: Rescue | r1server. Configuring the e3server server certificate
+  hosts: r1server
+  become: true
+  tasks:
+    - name: Edit ejabberd.yml
+      ansible.builtin.shell: |
+        cp /home/vagrant/e3server.pem .
+        chown root:ejabberd e3server.pem
+        chmod 640 e3server.pem
+        sed -i 's/ejabberd.pem/e3server.pem/' ejabberd.yml
+        systemctl restart ejabberd.service
+      args:
+        executable: /bin/bash
+        chdir: /etc/ejabberd/
+
+- name: eJabberd | Server "r1server". Confgure Erlang. Pre-configuration for creating a cluster
+  hosts: r1server
+  become: true
+  tasks:
+    - name: Change default Erlang node. Change default nodename for use a %HOSTNAME. ejabberd@localhost -> ejabberd@hostname. Specify the acceptable range of ports
+      ansible.builtin.shell: |
+        OLDNODE=ejabberd@localhost
+        NEWNODE=ejabberd@$HOSTNAME
+        OLDFILE=/var/lib/ejabberd/oldfiles/old.backup
+        NEWFILE=/var/lib/ejabberd/new.backup
+        mkdir /var/lib/ejabberd/oldfiles
+        chown -R ejabbed:ejabberd /var/lib/ejabberd/oldfiles
+        ejabberdctl --node $OLDNODE backup $OLDFILE
+        ejabberdctl --node $OLDNODE stop
+        mv /var/lib/ejabberd/*.* /var/lib/ejabberd/oldfiles/
+        sed -i "s/#ERLANG_NODE=ejabberd@localhost/ERLANG_NODE=$NEWNODE/" /etc/default/ejabberd
+        ejabberdctl start
+        ejabberdctl mnesia_change_nodename $OLDNODE $NEWNODE $OLDFILE $NEWFILE
+        ejabberdctl install_fallback $NEWFILE
+        ejabberdctl stop
+        ejabberdctl start
+        echo 'HWSTFERDACTZHIEXBZGN' > /var/lib/ejabberd/.erlang.cookie
+      args:
+        executable: /bin/bash
+    - name: Specify the acceptable range of ports.
+      ansible.builtin.shell: |
+        sed -i "s/#FIREWALL_WINDOW=/FIREWALL_WINDOW=4200-4210/" /etc/default/ejabberd
+      args:
+        executable: /bin/bash
+    - name: Reboot after change nodename.
+      ansible.builtin.shell: |
+        pkill -9 beam.smp
+        systemctl stop epmd.service
+        sleep 5
+        systemctl start ejabberd.service
+        sleep 5
+      args:
+        executable: /bin/bash
+
+- name: eJabberd | Add host to a cluster
+  hosts: r1server
+  become: true
+  tasks:
+    - name: Join ejabberd@e3server to cluster ejabberd@e1server or ejabberd@e2server
+      ansible.builtin.shell: |
+        ejabberdctl ping ejabberd@e1server | grep "pong" && ejabberdctl --no-timeout join_cluster 'ejabberd@e1server' || ejabberdctl --no-timeout join_cluster 'ejabberd@e2server' 
+      args:
+        executable: /bin/bash
+
+- name: keepalived | Install and configure keepalived. Установка Keepalived на сервер r1server. Настройка главного конфигурационного файла.
+  hosts: r1server
+  become: true
+  tasks:
+    - name: Install package "keepalived" to latest version
+      ansible.builtin.apt:
+        name: keepalived
+        state: present
+        update_cache: yes
+    - name: Configure and start virtual ip
+      ansible.builtin.shell: |
+        echo 'global_defs {' > /etc/keepalived/keepalived.conf
+        echo '   notification_email {' >> /etc/keepalived/keepalived.conf
+        echo '     admin@example.net' >> /etc/keepalived/keepalived.conf
+        echo '   }' >> /etc/keepalived/keepalived.conf
+        echo '   notification_email_from kladmin@example.net' >> /etc/keepalived/keepalived.conf
+        echo '   smtp_server 127.0.0.1' >> /etc/keepalived/keepalived.conf
+        echo '   smtp_connect_timeout 30' >> /etc/keepalived/keepalived.conf
+        echo "   router_id $HOSTNAME" >> /etc/keepalived/keepalived.conf
+        echo '#  vrrp_skip_check_adv_addr' >> /etc/keepalived/keepalived.conf
+        echo '#  vrrp_strict' >> /etc/keepalived/keepalived.conf
+        echo '#  vrrp_garp_interval 0' >> /etc/keepalived/keepalived.conf
+        echo '#  vrrp_gna_interval 0' >> /etc/keepalived/keepalived.conf
+        echo '}' >> /etc/keepalived/keepalived.conf
+        echo ' ' >> /etc/keepalived/keepalived.conf
+        echo 'vrrp_track_process track_beam.smp {' >> /etc/keepalived/keepalived.conf
+        echo '    process beam.smp' >> /etc/keepalived/keepalived.conf
+        echo '    weight 10' >> /etc/keepalived/keepalived.conf
+        echo '    delay 1' >> /etc/keepalived/keepalived.conf
+        echo '}' >> /etc/keepalived/keepalived.conf
+        echo 'vrrp_instance VI_1 {' >> /etc/keepalived/keepalived.conf
+        echo '    garp_master_delay 5' >> /etc/keepalived/keepalived.conf
+        echo '    garp_master_repeat 5' >> /etc/keepalived/keepalived.conf
+        echo '    garp_lower_prio_delay 5' >> /etc/keepalived/keepalived.conf
+        echo '    garp_lower_prio_repeat 5' >> /etc/keepalived/keepalived.conf
+        echo '    garp_master_refresh 60' >> /etc/keepalived/keepalived.conf
+        echo '    garp_master_refresh_repeat 2' >> /etc/keepalived/keepalived.conf
+        echo '    state BACKUP' >> /etc/keepalived/keepalived.conf
+        echo '    nopreempt' >> /etc/keepalived/keepalived.conf
+        echo '    interface ens5' >> /etc/keepalived/keepalived.conf
+        echo '#   smtp_alert' >> /etc/keepalived/keepalived.conf
+        echo '    virtual_router_id 51' >> /etc/keepalived/keepalived.conf
+        echo '    priority 99' >> /etc/keepalived/keepalived.conf
+        echo '    advert_int 5' >> /etc/keepalived/keepalived.conf
+        echo '    authentication {' >> /etc/keepalived/keepalived.conf
+        echo '        auth_type PASS' >> /etc/keepalived/keepalived.conf
+        echo '        auth_pass P@sswd' >> /etc/keepalived/keepalived.conf
+        echo '    }' >> /etc/keepalived/keepalived.conf
+        echo '    virtual_ipaddress {' >> /etc/keepalived/keepalived.conf
+        echo '        192.168.121.9 label keepalived_addr' >> /etc/keepalived/keepalived.conf
+        echo '    }' >> /etc/keepalived/keepalived.conf
+        echo '    track_process {' >> /etc/keepalived/keepalived.conf
+        echo '        track_beam.smp' >> /etc/keepalived/keepalived.conf
+        echo '    }' >> /etc/keepalived/keepalived.conf
+        echo '}' >> /etc/keepalived/keepalived.conf
+      args:
+        executable: /bin/bash
+        chdir: /etc/keepalived/
+
+- name: Keepalived | Перезапуск Keepalived
+  hosts: r1server
+  become: true
+  tasks:
+    - name: Перезапуск Keepalived
+      ansible.builtin.shell: systemctl restart keepalived
+      args:
+        executable: /bin/bash
