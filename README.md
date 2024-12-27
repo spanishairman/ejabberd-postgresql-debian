@@ -1994,3 +1994,205 @@ _Ansible_ _yml_-файл с сценарием для восстановлени
   - перевести текущий _Replica_-сервер из режима _readonly_ в _Master_; 
   - перенастроить серверы _Ejabberd_ - _e1server_ и _e2server_ на работу с новым _Master_-сервером - _psql2server_; 
   - настроить резервный сервер _r1server_ для работы в качестве _Replica_ вместо вышедшего из эксплуатации _psql1server_.
+
+_Ansible_ _yml_-файл с сценарием для восстановления кластера находится [здесь](/files/rescue-psql1.yml). Рассмотрим его подробно.
+Для начала настроим сетевые параметры и зададим имя хоста, а также зададим правила межсетевого экранирования:
+
+```
+- name: Rescue | r1server. Change ip-address for ens7. Add rule. Install and configure ejabberd
+  hosts: r1server
+  become: true
+  tasks:
+    - name: r1server. Down iface. Set new ip-address. Up iface
+      ansible.builtin.shell: |
+        ifdown ens6
+        ifdown ens7
+        sed -i '/iface ens7/{n;s/address 192\.168\.1\..*/address 192.168.1.10/}' /etc/network/interfaces
+        ifup ens7
+        hostnamectl set-hostname psql1server
+        sed -i 's/r1server/psql1server/' /etc/hosts
+        sed -i 's/r1server/psql1server/' /etc/hosts
+        echo '192.168.1.10 psql1server.domain.local psql1server' >> /etc/hosts
+        iptables -A INPUT -s 192.168.1.0/28 -m tcp -m multiport -p tcp --dports 5432,9100,9102,9187 -j ACCEPT
+        netfilter-persistent save
+        ip route add 192.168.1.0/29 via 192.168.1.9
+        ip route save > /etc/my-routes
+        echo 'up ip route restore < /etc/my-routes' >> /etc/network/interfaces
+      args:
+        executable: /bin/bash
+```
+
+Далее, настраиваем репозитории, устанавливаем необходимые пакеты и настраиваем СУБД:
+
+```
+- name: Rescue | r1server. Install and configure postgresql
+  hosts: r1server
+  become: true
+  tasks:
+    - name: APT. Add Backports repository into sources list
+      ansible.builtin.apt_repository:
+        repo: deb http://deb.debian.org/debian bookworm-backports main contrib non-free
+        state: present
+    - name: APT. Update the repository cache and install packages "postgresqql", "python3-psycopg2", "acl", "nfs-common", "prometheus-node-exporter", "prometheus-postgres-exporter" to latest version using default release bookworm-backport
+      ansible.builtin.apt:
+        name: postgresql,python3-psycopg2,acl,nfs-common,prometheus-node-exporter,prometheus-postgres-exporter
+        state: present
+        default_release: bookworm-backports
+        update_cache: true
+    - name: Config. Edit pg_hba configuration file. Add e1server access. Открываем доступ с первой ноды Jabber-сервера к базе ejabberd-domain-local для пользователя ejabberd.
+      postgresql_pg_hba:
+        dest: /etc/postgresql/15/main/pg_hba.conf
+        contype: host
+        users: ejabberd
+        source: 192.168.1.2
+        databases: ejabberd-domain-local
+        method: scram-sha-256
+        create: true
+    - name: Config. Edit pg_hba configuration file. Add e2server access. Открываем доступ со второй ноды Jabber-сервера к базе ejabberd-domain-local для пользователя ejabberd.
+      postgresql_pg_hba:
+        dest: /etc/postgresql/15/main/pg_hba.conf
+        contype: host
+        users: ejabberd
+        source: 192.168.1.3
+        databases: ejabberd-domain-local
+        method: scram-sha-256
+        create: true
+    - name: Config. Bash. Edit postgresql.conf for enable all interfaces. Разрешаем входящие подключения к порту 5432 на всех интерфейсах.
+      ansible.builtin.shell: |
+        echo "listen_addresses = '*'" >> postgresql.conf
+        systemctl restart postgresql
+      args:
+        executable: /bin/bash
+        chdir: /etc/postgresql/15/main/
+    - name: prometheus-postgres-exporter. Copy configuration file
+      ansible.builtin.shell: |
+        cp prometheus-postgres-exporter /etc/default/prometheus-postgres-exporter
+      args:
+        executable: /bin/bash
+        chdir: /home/vagrant/
+    - name: prometheus-postgres-exporter. Restart service
+      ansible.builtin.shell: |
+        sleep 5
+        systemctl restart prometheus-postgres-exporter.service
+      args:
+        executable: /bin/bash
+```
+
+Переводим текущий сервер _Replica_ в режим _Master_:
+
+```
+- name: Rescue | Start psql2server as Primary Server.
+  hosts: psql2server
+  become: true
+  tasks:
+    - name: Bash. Up psql2server to Master.
+      ansible.builtin.shell: |
+        pg_ctlcluster 15 main promote
+        systemctl restart postgresql.service
+      args:
+        executable: /bin/bash
+        chdir: /var/lib/postgresql/15/
+```
+
+Перенастраиваем оба сервера _Ejabberd_ для работы с новым _Master_ сервером _Postgresql_:
+
+```
+- name: Rescue | ejserver. Reconfigure ejabberd for a new Postgresql Master.
+  hosts: ejserver
+  become: true
+  tasks:
+    - name: Bash. Up psql2server to Master.
+      ansible.builtin.shell: |
+        sed -i 's/sql_server: 192.168.1.10/sql_server: 192.168.1.11/' ejabberd.yml
+        systemctl restart ejabberd.service
+      args:
+        executable: /bin/bash
+        chdir: /etc/ejabberd/
+```
+
+Настраиваем новый сервер _Replica_:
+
+```
+- name: Rescue | r1server as Secondary Server. Configuration a Replica server and start replication.
+  hosts: r1server
+  become: true
+  tasks:
+    - name: Config. Edit pg_hba configuration file. Access for Replica from psql1server. Разрешаем удалённое подключение пользователю replica_role для получения wal принимающим сервером.
+      postgresql_pg_hba:
+        dest: /etc/postgresql/15/main/pg_hba.conf
+        contype: host
+        users: replica_role
+        source: 192.168.1.11
+        databases: replication
+        method: scram-sha-256
+        create: true
+    - name: Bash. Create nfs dir.
+      ansible.builtin.shell: |
+        test ! -d /mnt/nfs && mkdir -p $_
+        echo "192.168.1.12:/srv/share/upload/ /mnt/nfs nfs vers=3,noauto,x-systemd.automount 0 0" >> /etc/fstab
+        systemctl daemon-reload
+        systemctl restart remote-fs.target
+      args:
+        executable: /bin/bash
+    - name: Config. Bash. Edit postgresql.conf configuration file.
+      ansible.builtin.shell: |
+        sed -i 's/#wal_level = replica/wal_level = replica/' postgresql.conf
+        sed -i 's/#max_wal_senders = 10/#max_wal_senders = 10/' postgresql.conf
+        sed -i 's/#max_replication_slots = 10/max_replication_slots = 10/' postgresql.conf
+        sed -i 's/#wal_keep_size = 0/wal_keep_size = 100/' postgresql.conf
+        sed -i 's/#max_slot_wal_keep_size = -1/max_slot_wal_keep_size = -1/' postgresql.conf
+        sed -i 's/#wal_sender_timeout = 60s/wal_sender_timeout = 60s/' postgresql.conf
+        sed -i 's/#track_commit_timestamp = off/track_commit_timestamp = off/' postgresql.conf
+        sed -i 's/#archive_mode = off/archive_mode = on/' postgresql.conf
+        echo '# Archive and restore commsnfs' >> postgresql.conf
+        echo "archive_command = 'test ! -f /mnt/nfs/psql2server/archive/%f && cp %p /mnt/nfs/psql2server/archive/%f'" >> postgresql.conf
+        echo "restore_command = 'cp /mnt/nfs/psql2server/archive/%f %p'" >> postgresql.conf
+      args:
+        executable: /bin/bash
+        chdir: /etc/postgresql/15/main/
+    - name: Config. Bash. Stop postgresql service, remove work directory. Set PGPASSWORD variable, start replication.
+      ansible.builtin.shell: |
+        systemctl stop postgresql
+        rm -rf /var/lib/postgresql/15/main
+        PGPASSWORD=Inc0gn1t0
+        export PGPASSWORD
+        pg_basebackup -h 192.168.1.11 -U replica_role -X stream -R -P -D /var/lib/postgresql/15/main
+        chown -R postgres: /var/lib/postgresql/15/main
+        systemctl start postgresql
+      args:
+        executable: /bin/bash
+```
+
+Устанавливаем и настраиваем на новом сервере _Replica_ клиент системы резервного копирования _Bacula_:
+
+```
+- name: Rescue | r1server. Install and configure "bacula-client". Installing "bacula-client" packages on the r1server
+  hosts:
+    r1server
+  become: true
+  tasks:
+    - name: APT. Update the repository cache and install packages "bacula-client" to latest version using default release bookworm-backport
+      ansible.builtin.apt:
+        name: bacula-client
+        state: present
+        update_cache: yes
+    - name: Bacula-client. Copy configuration file. Restart of service
+      ansible.builtin.shell: |
+        cp /home/vagrant/bacula-fd1.conf /etc/bacula/bacula-fd.conf
+        systemctl restart bacula-fd.service
+      args:
+        executable: /bin/bash
+    - name: Bash. Create a directory for archiving tasks
+      ansible.builtin.shell: |
+        mkdir -p /bacula-backup
+        chown -R postgres:postgres /bacula-backup
+        cp /home/vagrant/bacula-{before,after}-dump.sh /etc/bacula/scripts/
+        chown bacula:bacula /etc/bacula/scripts/bacula-{before,after}-dump.sh
+        chmod u+x /etc/bacula/scripts/bacula-{before,after}-dump.sh
+        systemctl restart bacula-fd.service
+      args:
+        executable: /bin/bash
+```
+
+После всех выполненых настроек, мы получаем работающую систему, где сервер СУБД _psql2server_, ранее выполняющий роль ведомого, стал главным,
+на месте бывшего _Master_-сервера поднят резервный хост, но уже в роли _Replica_, а ноды _Ejabberd_ настроены на работу с новым _Master_-сервером.
