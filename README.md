@@ -1832,7 +1832,7 @@ _Ansible_ _yml_-файл с сценарием для восстановлени
         sed -i 's/r1server/psql2server/' /etc/hosts
         sed -i 's/r1server/psql2server/' /etc/hosts
         echo '192.168.1.11 psql2server.domain.local psql2server' >> /etc/hosts
-        iptables -A INPUT -s 192.168.1.0/28 -m tcp -m multiport -p tcp --dports 5432,9102,9187 -j ACCEPT
+        iptables -A INPUT -s 192.168.1.0/28 -m tcp -m multiport -p tcp --dports 5432,9100,9102,9187 -j ACCEPT
         netfilter-persistent save
         ip route add 192.168.1.0/29 via 192.168.1.9
         ip route save > /etc/my-routes
@@ -1852,9 +1852,9 @@ _Ansible_ _yml_-файл с сценарием для восстановлени
       ansible.builtin.apt_repository:
         repo: deb http://deb.debian.org/debian bookworm-backports main contrib non-free
         state: present
-    - name: APT. Update the repository cache and install packages "postgresqql", "python3-psycopg2", "acl", "nfs-common" to latest version using default release bookworm-backport
+    - name: APT. Update the repository cache and install packages "postgresqql", "python3-psycopg2", "acl", "nfs-common", "prometheus-node-exporter", "prometheus-postgres-exporter" to latest version using default release bookworm-backport
       ansible.builtin.apt:
-        name: postgresql,python3-psycopg2,acl,nfs-common
+        name: postgresql,python3-psycopg2,acl,nfs-common,prometheus-node-exporter,prometheus-postgres-exporter
         state: present
         default_release: bookworm-backports
         update_cache: true
@@ -1883,6 +1883,18 @@ _Ansible_ _yml_-файл с сценарием для восстановлени
       args:
         executable: /bin/bash
         chdir: /etc/postgresql/15/main/
+    - name: prometheus-postgres-exporter. Copy configuration file
+      ansible.builtin.shell: |
+        cp prometheus-postgres-exporter /etc/default/prometheus-postgres-exporter
+      args:
+        executable: /bin/bash
+        chdir: /home/vagrant/
+    - name: prometheus-postgres-exporter. Restart service
+      ansible.builtin.shell: |
+        sleep 5
+        systemctl restart prometheus-postgres-exporter.service
+      args:
+        executable: /bin/bash
 ```
 
 Приводим к нужному виду конфигурационные файлы и запускаем репликацию
@@ -1937,4 +1949,36 @@ _Ansible_ _yml_-файл с сценарием для восстановлени
       args:
         executable: /bin/bash
 ```
-После всех этих действий новый сервер становится на замену вышедшей из строя реплики.
+
+Настраиваем клиент _Bacula_:
+
+```
+- name: Rescue | r1server. Install and configure "bacula-client". Installing "bacula-client" packages on the r1server
+  hosts:
+    r1server
+  become: true
+  tasks:
+    - name: APT. Update the repository cache and install packages "bacula-client" to latest version using default release bookworm-backport
+      ansible.builtin.apt:
+        name: bacula-client
+        state: present
+        update_cache: yes
+    - name: Bacula-client. Copy configuration file. Restart of service
+      ansible.builtin.shell: |
+        cp /home/vagrant/bacula-fd2.conf /etc/bacula/bacula-fd.conf
+        systemctl restart bacula-fd.service
+      args:
+        executable: /bin/bash
+    - name: Bash. Create a directory for archiving tasks
+      ansible.builtin.shell: |
+        mkdir -p /bacula-backup
+        chown -R postgres:postgres /bacula-backup
+        cp /home/vagrant/bacula-{before,after}-dump.sh /etc/bacula/scripts/
+        chown bacula:bacula /etc/bacula/scripts/bacula-{before,after}-dump.sh
+        chmod u+x /etc/bacula/scripts/bacula-{before,after}-dump.sh
+        systemctl restart bacula-fd.service
+      args:
+        executable: /bin/bash
+```
+
+После всех этих действий новый сервер становится на замену вышедшей из строя реплики. С него снимаются резервные копии, на сервер _Grafana_ выводятся метрики, собираемые экспортерами _prometheus-node-exporter_, _prometheus-postgres-exporter_

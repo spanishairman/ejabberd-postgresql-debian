@@ -552,6 +552,11 @@ Vagrant.configure("2") do |config|
       lvirt.management_network_mac = "52:54:00:27:28:90"
   end
   r1server.vm.provision "file", source: "ca/e3server.pem", destination: "~/e3server.pem"
+  r1server.vm.provision "file", source: "prometheus/prometheus-postgres-exporter", destination: "~/prometheus-postgres-exporter"
+  r1server.vm.provision "file", source: "bacula/psql1/bacula-fd.conf", destination: "~/bacula-fd1.conf"
+  r1server.vm.provision "file", source: "bacula/psql2/bacula-fd.conf", destination: "~/bacula-fd2.conf"
+  r1server.vm.provision "file", source: "bacula/psql2/bacula-before-dump.sh", destination: "~/bacula-before-dump.sh"
+  r1server.vm.provision "file", source: "bacula/psql2/bacula-after-dump.sh", destination: "~/bacula-after-dump.sh"
   r1server.vm.provision "shell", inline: <<-SHELL
       brd='*************************************************************'
       echo "$brd"
@@ -590,8 +595,8 @@ Vagrant.configure("2") do |config|
       iptables -A OUTPUT -j ACCEPT
       # Разрешим входящие с хоста управления.
       iptables -A INPUT -s 192.168.121.1 -m tcp -p tcp --dport 22 -j ACCEPT
-      # Также, разрешим входящие для виртуальных хостов по ssh и для серверов баз данных во всём диапазоне tcp
-      iptables -A INPUT -s 192.168.1.0/28 -m multiport -m tcp -p tcp --dports 22,9100 -j ACCEPT
+      # Также, разрешим входящие для виртуальных хостов по ssh
+      iptables -A INPUT -s 192.168.1.0/28 -m tcp -p tcp --dport 22 -j ACCEPT
       # Откроем ICMP ping
       iptables -A INPUT -p icmp -m icmp --icmp-type 8 -j ACCEPT
       netfilter-persistent save
